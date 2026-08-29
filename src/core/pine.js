@@ -508,9 +508,30 @@ export async function smartCompile() {
   const buttonClicked = await evaluate(`
     (function() {
       var hit = ${FIND_COMPILE_BUTTON}();
-      if (!hit) return null;
-      hit.el.click();
-      return hit.action;
+      if (hit) { hit.el.click(); return hit.action; }
+      // Locale-independent structural fallback (from upstream #487): when the
+      // UI language matches no label regex above, find the icon-only compile
+      // button ("noContent" class, no text) positioned immediately before
+      // the Save button inside the script toolbar row.
+      var saveBtn = null;
+      var btns = document.querySelectorAll('button');
+      for (var i = 0; i < btns.length; i++) {
+        if (btns[i].className.indexOf('saveButton') !== -1 && btns[i].offsetParent !== null) { saveBtn = btns[i]; break; }
+      }
+      if (saveBtn) {
+        var row = saveBtn.closest('.tv-script-widget') || saveBtn.parentElement;
+        var rowBtns = row ? Array.prototype.slice.call(row.querySelectorAll('button')) : [];
+        var saveIdx = rowBtns.indexOf(saveBtn);
+        for (var j = saveIdx - 1; j >= 0; j--) {
+          if (rowBtns[j].className.indexOf('noContent') !== -1 && rowBtns[j].offsetParent !== null) {
+            rowBtns[j].click();
+            return 'Add to chart (structural)';
+          }
+        }
+        saveBtn.click();
+        return 'Pine Save';
+      }
+      return null;
     })()
   `);
 
