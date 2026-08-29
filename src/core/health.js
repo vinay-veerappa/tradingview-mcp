@@ -383,11 +383,13 @@ export async function launch({ port, kill_existing, _deps } = {}) {
   if (!tvPath && platform === 'win32') {
     // MSIX/Windows Store install — InstallLocation is in WindowsApps, which is ACL-restricted
     // for normal `dir` enumeration but readable via Get-AppxPackage without elevation.
+    // Wildcard match: the Store listing publishes under a numeric-publisher name
+    // (e.g. 31178TradingViewInc.TradingView), not just TradingView.Desktop.
+    // (Merged from our e98ffa56 patch — now routed through deps so unit tests can
+    // mock it; the wildcard already subsumes the old exact-name query.)
     try {
-      // Wildcard match: the Store listing publishes under a numeric-publisher name
-      // (e.g. 31178TradingViewInc.TradingView), not just TradingView.Desktop.
       const ps = 'powershell -NoProfile -Command "(Get-AppxPackage -Name \'*TradingView*\' -ErrorAction SilentlyContinue | Select-Object -First 1).InstallLocation"';
-      const installDir = deps.execSync(ps, { timeout: 5000 }).toString().trim();
+      const installDir = deps.execSync(ps, { timeout: 8000 }).toString().trim();
       if (installDir) {
         const candidate = `${installDir}\\TradingView.exe`;
         if (deps.existsSync(candidate)) tvPath = candidate;
@@ -395,29 +397,15 @@ export async function launch({ port, kill_existing, _deps } = {}) {
     } catch { /* ignore */ }
   }
 
-  // Windows Store (MSIX) detection — version-independent.
-  // Get-AppxPackage queries the MSIX package registry, so it works across
-  // TradingView updates without needing a hardcoded version path.
-  // C:\Program Files\WindowsApps is permission-locked for normal processes,
-  // so readdirSync won't work there — this PowerShell query is the reliable way.
-  if (!tvPath && platform === 'win32') {
-    try {
-      const appxCmd = `powershell -NoProfile -Command "(Get-AppxPackage -Name 'TradingView.Desktop').InstallLocation"`;
-      const appxLoc = execSync(appxCmd, { timeout: 8000 }).toString().trim();
-      if (appxLoc) {
-        const appxExe = `${appxLoc}\\TradingView.exe`;
-        if (existsSync(appxExe)) tvPath = appxExe;
-      }
-    } catch { /* TradingView MSIX package not installed */ }
-  }
-
   // Secondary fallback: query the running process path via WMI.
   // Works if TradingView is already running, regardless of install method.
+  // Routed through deps.* like everything above so the "not found" unit test
+  // (which mocks execSync to throw) reaches the throw instead of spawning.
   if (!tvPath && platform === 'win32') {
     try {
       const wmiCmd = `powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \\"Name='TradingView.exe'\\" | Select-Object -First 1 -ExpandProperty ExecutablePath"`;
-      const wmiPath = execSync(wmiCmd, { timeout: 8000 }).toString().trim();
-      if (wmiPath && existsSync(wmiPath)) tvPath = wmiPath;
+      const wmiPath = deps.execSync(wmiCmd, { timeout: 8000 }).toString().trim();
+      if (wmiPath && deps.existsSync(wmiPath)) tvPath = wmiPath;
     } catch { /* TradingView not running or WMI unavailable */ }
   }
 
