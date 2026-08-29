@@ -288,8 +288,6 @@ describe('drawing.js — sanitized evaluate calls', () => {
 // ── Source-level audit ───────────────────────────────────────────────────
 
 describe('source audit — no unsafe interpolation patterns', () => {
-  // fileURLToPath, not .pathname: on Windows the latter yields "/C:/...", which
-  // readdirSync then resolves to "C:\C:\..." and fails with ENOENT.
   const CORE_DIR = fileURLToPath(new URL('../src/core/', import.meta.url));
   const coreFiles = readdirSync(CORE_DIR).filter(f => f.endsWith('.js'));
 

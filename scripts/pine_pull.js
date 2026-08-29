@@ -2,7 +2,7 @@
 // Pull current Pine Script source from TradingView editor → scripts/current.pine
 import CDP from 'chrome-remote-interface';
 import { writeFileSync } from 'fs';
-import { fileURLToPath } from 'url';
+import { fileURLToPath } from 'node:url';
 
 const targets = await (await fetch('http://localhost:9222/json/list')).json();
 const t = targets.find(t => t.url?.includes('tradingview.com'));

@@ -2,7 +2,7 @@
 // Push scripts/current.pine → TradingView editor, then compile
 import CDP from 'chrome-remote-interface';
 import { readFileSync } from 'fs';
-import { fileURLToPath } from 'url';
+import { fileURLToPath } from 'node:url';
 
 const srcPath = fileURLToPath(new URL('../scripts/current.pine', import.meta.url));
 const src = readFileSync(srcPath, 'utf-8');
