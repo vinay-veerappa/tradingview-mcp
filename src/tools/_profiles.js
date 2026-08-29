@@ -28,7 +28,7 @@ import { listCapabilities } from '../capabilities.js';
 export const PROFILES = Object.freeze({
   // Trader's daily surface: read everything, minimal mutations.
   base: Object.freeze([
-    'tv_health_check', 'tv_launch',
+    'tv_health_check', 'tv_launch', 'tv_compatibility_report', 'cdp_diagnostics',
     'session_snapshot', 'chart_changes', 'chart_get_state',
     'quote_get', 'data_get_ohlcv', 'data_get_study_values',
     'data_get_pine_lines', 'data_get_pine_labels', 'data_get_pine_tables', 'data_get_pine_boxes',

@@ -18,6 +18,7 @@ import { registerUiTools } from './ui.js';
 import { registerPaneTools } from './pane.js';
 import { registerTabTools } from './tab.js';
 import { registerPaperTools } from './paper.js';
+import { registerReliabilityTools } from './reliability.js';
 
 export function registerAll(server) {
   registerHealthTools(server);
@@ -36,4 +37,5 @@ export function registerAll(server) {
   registerPaneTools(server);
   registerTabTools(server);
   registerPaperTools(server);
+  registerReliabilityTools(server);
 }
