@@ -62,6 +62,13 @@ Panes: pane_list, pane_set_layout (s, 2h, 2v, 4, 6, 8), pane_focus, pane_set_sym
 Tabs: tab_list, tab_new, tab_close, tab_switch
 Paper Trading (native only, broker id "Paper"): paper_get_status → paper_connect → paper_get_account / paper_switch_account / paper_list_positions / paper_list_orders → paper_place_order (tif DAY|WEEK|MONTH|GTD) / paper_cancel_order / paper_modify_order / paper_close_position / paper_set_brackets (mutations fail closed unless active broker is Paper)
 
+SECURITY:
+- ui_evaluate executes arbitrary page JavaScript and is disabled by default
+- replay_trade changes simulated Bar Replay positions and is disabled by default
+- tv_update pulls and runs remote code (git + npm ci) and is disabled by default
+- Replay navigation remains available without enabling simulated trades
+- This MCP cannot verify account type or guarantee demo/paper isolation
+
 CONTEXT MANAGEMENT:
 - ALWAYS use summary=true on data_get_ohlcv
 - ALWAYS use study_filter on pine tools when you know which indicator you want
@@ -91,6 +98,10 @@ registerPaperTools(server);
 // Startup notice (stderr so it doesn't interfere with MCP stdio protocol)
 process.stderr.write('⚠  tradingview-mcp  |  Unofficial tool. Not affiliated with TradingView Inc. or Anthropic.\n');
 process.stderr.write('   Ensure your usage complies with TradingView\'s Terms of Use.\n\n');
+process.stderr.write('   Security: ui_evaluate arbitrary JavaScript is disabled by default.\n');
+process.stderr.write('   Security: replay_trade simulated position changes are disabled by default.\n');
+process.stderr.write('   Security: tv_update (pulls and runs remote code) is disabled by default.\n');
+process.stderr.write('   Replay is not a guarantee of demo/paper isolation; disconnect real brokers before use.\n\n');
 
 // Start stdio transport
 const transport = new StdioServerTransport();
