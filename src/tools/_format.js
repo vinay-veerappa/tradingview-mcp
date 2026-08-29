@@ -28,24 +28,30 @@ const RESERVED_CODES = Object.freeze(['precondition_failed', 'state_changed']);
 
 function buildErrorEnvelope(err, context = {}) {
   const isCdp = err && err.name === 'CdpError';
-  const reason = isCdp && err.reason ? err.reason : classifyGeneric(err);
+  // CdpError.reasons not in the CDAP map (e.g. the P2-5 reserved codes) flow
+  // through verbatim as the code; generic errors get message classification.
+  const reason = (isCdp && err.reason) || err?.reason || classifyGeneric(err);
+  const reserved = RESERVED_CODES.includes(reason);
   const meta = CDP_ERROR_REASONS[reason] || CDP_ERROR_REASONS.cdp_command_failed;
   const outcome_unknown = Boolean(err?.outcome_unknown);
 
   const envelope = {
     success: false,
     error: {
-      code: reason === 'cdp_command_failed' && !isCdp ? classifyGeneric(err) : reason,
+      code: reason,
       message: String(err?.message || err || 'Unknown error'),
-      retryable: meta.retryable && !outcome_unknown,
+      retryable: !reserved && (meta.retryable && !outcome_unknown),
       outcome_unknown,
       reconnect_attempted: Boolean(err?.transport_reconnect_attempted),
       reconnected: Boolean(err?.transport_reconnected),
       suggested_action: outcome_unknown
         ? 'Outcome unknown: verify state before retrying — a blind retry may duplicate the action'
-        : meta.suggested_action,
+        : (reserved
+          ? (err?.suggested_fix || 'Verify current state, then retry with fresh preconditions')
+          : meta.suggested_action),
     },
   };
+  if (err?.live_identity) envelope.error.live_identity = err.live_identity;
   if (context.target_id) envelope.error.target_id = context.target_id;
   if (context.chart) envelope.error.chart = context.chart;
   if (context.suggested) envelope.error.suggested_action = String(context.suggested);

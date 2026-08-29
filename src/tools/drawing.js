@@ -1,6 +1,34 @@
 import { z } from 'zod';
 import { jsonResult, errorResult } from './_format.js';
 import * as core from '../core/drawing.js';
+import { evaluate } from '../connection.js';
+import { CHART_IDENTITY_JS, extractIdentity, checkPreconditions } from '../core/_identity.js';
+
+// Destructive ops REQUIRE preconditions by default (P2-5): the caller must
+// prove it knows which chart it is about to wipe. Overridable via env for
+// backwards compatibility in trusted automation contexts.
+const DRAW_CLEAR_REQUIRE_PRECONDITIONS =
+  process.env.TV_DRAW_CLEAR_PRECONDITIONS !== 'off';
+
+async function preconditionFailure(expected, env) {
+  const live = extractIdentity(await evaluate(env?.CHART_IDENTITY_JS || CHART_IDENTITY_JS));
+  const failures = checkPreconditions(expected, live);
+  if (!failures.length) return null;
+  const err = new Error(
+    `Chart identity changed since inspection: ` +
+    failures.map(f => `${f.field}: expected ${JSON.stringify(f.expected)}, chart shows ${JSON.stringify(f.actual)}`).join('; ') +
+    `. Re-read chart state and retry with fresh preconditions.`
+  );
+  err.name = 'CdpError';
+  err.reason = 'precondition_failed';
+  err.live_identity = live;
+  return err;
+}
+
+const preconditionShape = {
+  expected_symbol: z.string().optional().describe('Refuse unless the chart currently shows this symbol (use what a prior read returned)'),
+  expected_timeframe: z.string().optional().describe('Refuse unless the chart timeframe matches (e.g. "5", "D")'),
+};
 
 export function registerDrawingTools(server) {
   server.tool('draw_shape', 'Draw a shape/line on the chart', {
@@ -19,8 +47,25 @@ export function registerDrawingTools(server) {
     catch (err) { return errorResult(err); }
   });
 
-  server.tool('draw_clear', 'Remove all drawings from the chart', {}, async () => {
-    try { return jsonResult(await core.clearAll()); }
+  server.tool('draw_clear', 'Remove all drawings from the chart. DESTRUCTIVE: requires expected_symbol (and optionally expected_timeframe) to confirm which chart is being wiped — refuses if the chart moved since your last read.', {
+    ...preconditionShape,
+    confirm: z.boolean().optional().describe('Must be true — double-tap for a destructive, chart-wide action'),
+  }, async ({ expected_symbol, expected_timeframe, confirm }) => {
+    try {
+      if (DRAW_CLEAR_REQUIRE_PRECONDITIONS && (!expected_symbol || confirm !== true)) {
+        const err = new Error(
+          'draw_clear requires expected_symbol (identity precondition) and confirm: true. ' +
+          'Read chart state first, then pass expected_symbol from that read.'
+        );
+        err.name = 'CdpError';
+        err.reason = 'precondition_failed';
+        err.suggested_fix = 'chart_get_state → re-submit with { expected_symbol, confirm: true }';
+        return errorResult(err);
+      }
+      const preErr = await preconditionFailure({ expected_symbol, expected_timeframe });
+      if (preErr) throw preErr;
+      return jsonResult(await core.clearAll());
+    }
     catch (err) { return errorResult(err); }
   });
 
