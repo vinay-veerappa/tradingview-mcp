@@ -388,8 +388,21 @@ export async function launch({ port, kill_existing, _deps } = {}) {
     // (Merged from our e98ffa56 patch — now routed through deps so unit tests can
     // mock it; the wildcard already subsumes the old exact-name query.)
     try {
-      const ps = 'powershell -NoProfile -Command "(Get-AppxPackage -Name \'*TradingView*\' -ErrorAction SilentlyContinue | Select-Object -First 1).InstallLocation"';
-      const installDir = deps.execSync(ps, { timeout: 8000 }).toString().trim();
+<<<<<<< HEAD
+      // 20s, not 5s (from #437): Get-AppxPackage plus PowerShell startup measured
+      // 6.1-7.8s on a normal Windows 11 box, so a 5s budget killed this call every
+      // time and MSIX installs were never found. -NonInteractive so it can never
+      // block on a prompt and burn the whole budget.
+      const ps = 'powershell -NoProfile -NonInteractive -Command "(Get-AppxPackage -Name \'*TradingView*\' -ErrorAction SilentlyContinue | Select-Object -First 1).InstallLocation"';
+      const installDir = deps.execSync(ps, { timeout: 20000 }).toString().trim();
+=======
+      // 20s, not 5s: Get-AppxPackage plus PowerShell startup measured 6.1-7.8s
+      // on a normal Windows 11 box, so a 5s budget killed this call every time
+      // and MSIX installs were never found. -NonInteractive so it can never
+      // block on a prompt and burn the whole budget.
+      const ps = 'powershell -NoProfile -NonInteractive -Command "(Get-AppxPackage -Name \'TradingView.Desktop\' -ErrorAction SilentlyContinue).InstallLocation"';
+      const installDir = deps.execSync(ps, { timeout: 20000 }).toString().trim();
+>>>>>>> origin/pr/437
       if (installDir) {
         const candidate = `${installDir}\\TradingView.exe`;
         if (deps.existsSync(candidate)) tvPath = candidate;
