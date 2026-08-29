@@ -539,6 +539,20 @@ export async function evaluateAsync(expression, opts) { return manager.evaluateA
 export async function disconnect() { return manager.disconnect(); }
 export async function invalidateClient(candidate) { return manager.invalidateClient(candidate); }
 
+/**
+ * Legacy tab_switch shim (from the pre-manager architecture, still called by
+ * core/tab.js): drop the cached client and re-attach to a specific target id.
+ */
+export async function reconnectTo(targetId) {
+  if (targetId != null) {
+    const info = await manager.getTargetInfo();
+    const currentId = info?.id != null ? String(info.id) : null;
+    if (currentId === String(targetId)) return manager.getClient();
+    await manager.disconnect();
+  }
+  return manager.connect({ expectedTargetId: targetId != null ? String(targetId) : undefined });
+}
+
 // --- Direct API path helpers ---
 // Each returns the STRING expression path after verifying it exists.
 // Callers use the returned string in their own evaluate() calls.

@@ -12,6 +12,18 @@ export function register(name, config) {
   commands.set(name, config);
 }
 
+/**
+ * Test seam (from #429): resolves a registered command's handler without
+ * spawning a CLI process, so capability-gate tests can drive the exact
+ * production code path in-process.
+ */
+export function getRegisteredHandler(name, subcommand) {
+  const cmd = commands.get(name);
+  if (!cmd) return null;
+  if (cmd.subcommands && subcommand) return cmd.subcommands.get(subcommand)?.handler || null;
+  return cmd.handler || null;
+}
+
 function printHelp() {
   console.log('Usage: tv <command> [options]\n');
   console.log('Commands:');
