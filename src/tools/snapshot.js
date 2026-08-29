@@ -1,0 +1,28 @@
+import { z } from 'zod';
+import { jsonResult, errorResult } from './_format.js';
+import { sessionSnapshot, chartChanges, PRESETS } from '../core/snapshot.js';
+
+export function registerSnapshotTools(server) {
+  server.tool('session_snapshot', 'One-call chart brief: identity, quote, OHLCV summary, chart state (type/studies), visible range, study values, Pine lines/labels/tables/boxes, alerts, strategy summary — with per-section status, per-section hashes, and a state-hash consistency check (retries once on mid-flight symbol/timeframe change; reports state_changed instead of mixing symbols). Use preset/include/exclude to control width.', {
+    symbol: z.string().optional().describe('Temporarily switch the chart to this symbol for the snapshot (restored after)'),
+    timeframe: z.string().optional().describe('Temporarily apply this timeframe for the snapshot (restored after)'),
+    include: z.array(z.string()).optional().describe('Section list (quote, ohlcv_summary, chart_state, visible_range, study_values, pine_lines, pine_labels, pine_tables, pine_boxes, alerts, strategy_summary)'),
+    exclude: z.array(z.string()).optional().describe('Sections to skip'),
+    preset: z.enum(Object.keys(PRESETS)).optional().describe('Section preset (ignored when include is given)'),
+    study_filter: z.string().optional().describe('Substring to filter Pine sections to one indicator (e.g., "Profiler")'),
+    compact: z.boolean().optional().describe('Return per-section hashes instead of full payloads'),
+  }, async (args) => {
+    try { return jsonResult(await sessionSnapshot(args)); }
+    catch (err) { return errorResult(err); }
+  });
+
+  server.tool('chart_changes', 'Diff the live chart against a prior session_snapshot without re-reading everything: pass since = prior snapshot_hash → returns changed/unchanged section lists plus a new snapshot hash.', {
+    since: z.record(z.string()).describe('section_hashes map from a prior session_snapshot (or the prior snapshot object)'),
+    include: z.array(z.string()).optional().describe('Restrict both collection and diff to these sections'),
+    preset: z.string().optional().describe('Section preset (brief|analysis|strategy|pine_debug)'),
+    study_filter: z.string().optional().describe('Filter Pine sections to one indicator'),
+  }, async ({ since, include, exclude, preset, study_filter }) => {
+    try { return jsonResult(await chartChanges({ since, include, exclude, preset, study_filter })); }
+    catch (err) { return errorResult(err); }
+  });
+}

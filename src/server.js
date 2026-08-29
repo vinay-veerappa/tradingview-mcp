@@ -15,6 +15,7 @@ import { registerUiTools } from './tools/ui.js';
 import { registerPaneTools } from './tools/pane.js';
 import { registerTabTools } from './tools/tab.js';
 import { registerPaperTools } from './tools/paper.js';
+import { registerSnapshotTools } from './tools/snapshot.js';
 
 const server = new McpServer(
   {
@@ -28,7 +29,9 @@ const server = new McpServer(
 TOOL SELECTION GUIDE — use this to pick the right tool:
 
 Reading your chart:
+- session_snapshot → ONE call: quote + OHLCV summary + indicator values + Pine levels/labels/tables/boxes with per-section status and a snapshot hash for chart_changes. Prefer over 5-7 individual reads
 - chart_get_state → get symbol, timeframe, all indicator names + entity IDs (call first)
+- chart_changes → diff chart vs prior session_snapshot snapshot hash (changed/unchanged sections)
 - data_get_study_values → get current numeric values from ALL visible indicators (RSI, MACD, BB, EMA, etc.)
 - quote_get → get real-time price snapshot (last, OHLC, volume)
 - data_get_ohlcv → get price bars. ALWAYS pass summary=true unless you need individual bars
@@ -80,6 +83,7 @@ CONTEXT MANAGEMENT:
 
 // Register all tool groups
 registerHealthTools(server);
+registerSnapshotTools(server);
 registerChartTools(server);
 registerPineTools(server);
 registerDataTools(server);
