@@ -19,6 +19,7 @@ import { registerPaneTools } from './pane.js';
 import { registerTabTools } from './tab.js';
 import { registerPaperTools } from './paper.js';
 import { registerReliabilityTools } from './reliability.js';
+import { registerPaneScanTools } from './pane_scan.js';
 
 export function registerAll(server) {
   registerHealthTools(server);
@@ -38,4 +39,5 @@ export function registerAll(server) {
   registerTabTools(server);
   registerPaperTools(server);
   registerReliabilityTools(server);
+  registerPaneScanTools(server);
 }
