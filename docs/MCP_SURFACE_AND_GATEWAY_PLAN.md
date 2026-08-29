@@ -143,7 +143,7 @@ Connection age, target, eval/timeout/reconnect counters, avg+p95 latency, last f
 
 Compound ops and streams honor MCP request cancellation (`RequestHandlerExtra.signal`), caller deadline, HTTP client disconnect; temporary symbol/tf mutations always unwind via `withChartContext`'s `finally` (P2-2 is the load-bearing piece here). Extends the existing bounded-ops discipline in `connection.js` to workflows.
 
-### P2-19 · Canonical operation registry *(the E in "E" for this pass — carried from review 1, unchanged, restated here as the spine: name, handler, input+output schema, access, profiles, transports, annotations — one definition; bindings derived; §6 of v2 stays the sequence arbiter)*
+### P2-19 · Canonical operation registry *(the structural spine — carried from review 1, unchanged; each operation declares: name, handler, input+output schema, access, profiles, transports, annotations — one definition; all bindings derived; §4's queue stays the sequence arbiter)*
 
 ### P2-20 · Contract & payload-budget tests
 
@@ -176,4 +176,4 @@ Order placement over HTTP (paper or otherwise) without a new ADR · auth beyond 
 ## 6. Review trail
 
 - Pass 1 (2026-08-29): F1-F7 verification table; registry + host topology adopted; v1 pseudocode/budget retracted. `46390f48`.
-- Pass 2 (2026-08-29): 20-item catalog adopted with P2-n IDs; `session_briefing` superseded by `session_snapshot`; priority queue reordered per pass 2. Verified before adoption: `jsonResult` text-only (`_format.js:5`), zero annotation/resource usage in `src/`, `existing CdpError fields` fields, pane-tool surface.
+- Pass 2 (2026-08-29): 20-item catalog adopted with P2-n IDs; `session_briefing` superseded by `session_snapshot`; priority queue reordered per pass 2. Verified before adoption: `jsonResult` text-only (`_format.js:5`), zero annotation/resource usage in `src/`, `CdpError`'s existing fields, pane-tool surface.
