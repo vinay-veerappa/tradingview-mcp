@@ -10,6 +10,7 @@
  */
 import { evaluate as _evaluate, evaluateAsync as _evaluateAsync, safeString, requireFinite } from '../connection.js';
 import { PAGE_HELPERS, SUMMARY_IDS, tradingPanelButtonProbe } from './paper_cdp.js';
+import * as dedup from './_order_dedup.js';
 
 /** Stable internal id of TradingView's native Paper Trading provider. */
 export const NATIVE_PAPER_BROKER_ID = 'Paper';
@@ -495,7 +496,7 @@ function normalizeTif(tif, durationDatetime) {
 
 export async function placeOrder({
   side, type = 'market', qty, symbol, price, stop_price, take_profit, stop_loss,
-  tif, duration_datetime, _deps,
+  tif, duration_datetime, client_order_id, preview = false, _deps,
 } = {}) {
   await assertPaperContext({ _deps });
   const sideNum = normalizeSide(side);
@@ -509,6 +510,29 @@ export async function placeOrder({
     throw new Error('stop_price is required for stop / stop_limit orders');
   }
   const duration = normalizeTif(tif, duration_datetime);
+
+  // Normalized preview: returned by preview:true and attached to placements.
+  const previewOrder = dedup.normalizeOrderPreview(
+    { symbol, side, type, qty: quantity, price, stop_price, take_profit, stop_loss, tif: duration?.type || null },
+    {},
+  );
+
+  if (preview) {
+    return { success: true, action: 'preview', preview: previewOrder, note: 'Preview only — no order was placed.' };
+  }
+
+  // Idempotency (P2-6): a repeated client_order_id replays the recorded
+  // outcome instead of placing a duplicate order.
+  if (client_order_id) {
+    const prior = dedup.lookup(client_order_id);
+    if (prior) {
+      return {
+        ...prior,
+        deduplicated: true,
+        note: `client_order_id '${client_order_id}' was already submitted; original outcome replayed (no new order).`,
+      };
+    }
+  }
 
   const { evaluateAsync } = _resolve(_deps);
   const result = await evaluateAsync(`
@@ -544,14 +568,21 @@ export async function placeOrder({
     })()
   `);
   if (result?.error) throw new Error(result.error);
-  return {
+  const outcome = {
     success: true,
     action: 'place_order',
     side: sideNum === SIDE.buy ? 'buy' : 'sell',
     type: String(type).toLowerCase(),
     tif: duration?.type || null,
+    preview: previewOrder,
     result: result?.result ?? null,
   };
+  // Record AFTER a definitive outcome. outcome_unknown failures never reach
+  // here (they throw), so nothing is recorded for ambiguous submissions —
+  // the retry with the same key will NOT replay a possibly-unplaced order
+  // unless we actually observed success above.
+  if (client_order_id) dedup.record(client_order_id, outcome);
+  return outcome;
 }
 
 export async function cancelOrder({ order_id, _deps } = {}) {

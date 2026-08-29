@@ -49,7 +49,7 @@ export function registerPaperTools(server) {
     catch (err) { return errorResult(err); }
   });
 
-  server.tool('paper_place_order', 'Place an order on native Paper Trading only. Fail-closed if active broker is not Paper. Types: market, limit, stop, stop_limit. Optional TIF (DAY/WEEK/MONTH/GTD), take_profit / stop_loss brackets.', {
+  server.tool('paper_place_order', 'Place an order on native Paper Trading only. Fail-closed if active broker is not Paper. Types: market, limit, stop, stop_limit. Optional TIF (DAY/WEEK/MONTH/GTD), take_profit / stop_loss brackets. Pass client_order_id to make retries safe — the same id replays the original outcome instead of placing twice. Use preview: true to validate and normalize without placing.', {
     side: z.enum(['buy', 'sell']).describe('Order side'),
     type: z.enum(['market', 'limit', 'stop', 'stop_limit']).optional().describe('Order type (default market)'),
     qty: z.coerce.number().describe('Quantity'),
@@ -60,6 +60,8 @@ export function registerPaperTools(server) {
     stop_loss: z.coerce.number().optional().describe('Stop loss price'),
     tif: z.enum(['DAY', 'WEEK', 'MONTH', 'GTD']).optional().describe('Time in force (Paper default in UI is WEEK)'),
     duration_datetime: z.union([z.string(), z.coerce.number()]).optional().describe('Required for GTD: ISO date/time or unix ms'),
+    client_order_id: z.string().optional().describe('STRONGLY RECOMMENDED: idempotency key — retry the SAME key after a timeout to replay the original outcome instead of duplicating the order (5 min TTL)'),
+    preview: z.boolean().optional().describe('If true: validate + normalize and return the order shape WITHOUT placing'),
   }, async (args) => {
     try { return jsonResult(await core.placeOrder(args)); }
     catch (err) { return errorResult(err); }
