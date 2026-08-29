@@ -8,6 +8,9 @@ import assert from 'node:assert/strict';
 import { update } from '../src/core/update.js';
 import { classifyUpdate } from '../src/core/health.js';
 
+import { SELF_UPDATE_ACK, SELF_UPDATE_ENV } from '../src/capabilities.js';
+
+const OPTIN_ENV = { [SELF_UPDATE_ENV]: SELF_UPDATE_ACK };
 const OLD = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const NEW = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 
@@ -39,7 +42,7 @@ function gitDeps({ branch = 'main', dirty = '', remoteSha = OLD, ahead = 0, behi
       throw new Error(`unexpected cmd: ${cmd}`);
     },
   };
-  return { deps, state };
+  return { deps: { ...deps, env: OPTIN_ENV }, state };
 }
 
 describe('update() — guards', () => {

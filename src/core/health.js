@@ -333,7 +333,10 @@ function _copyMsixPackageLocal(tvPath, { cpSync, rmSync, readdirSync, existsSync
   if (!existsSync(dstExe)) {
     try {
       for (const entry of readdirSync(cacheRoot)) {
-        if (entry !== pkgName && /^TradingView\./i.test(entry)) {
+        // Match anywhere in the name, not just the prefix (from #485): real
+        // Store packages are publisher-prefixed (31178TradingViewInc.TradingView_...),
+        // and stale copies would otherwise pile up at ~330MB each.
+        if (entry !== pkgName && /TradingView/i.test(entry)) {
           rmSync(join(cacheRoot, entry), { recursive: true, force: true });
         }
       }
