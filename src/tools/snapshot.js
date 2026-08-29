@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { A } from './_annotations.js';
 import { jsonResult, errorResult } from './_format.js';
 import { sessionSnapshot, chartChanges, PRESETS } from '../core/snapshot.js';
 
@@ -11,7 +12,9 @@ export function registerSnapshotTools(server) {
     preset: z.enum(Object.keys(PRESETS)).optional().describe('Section preset (ignored when include is given)'),
     study_filter: z.string().optional().describe('Substring to filter Pine sections to one indicator (e.g., "Profiler")'),
     compact: z.boolean().optional().describe('Return per-section hashes instead of full payloads'),
-  }, async (args) => {
+  },
+    A.READ,
+    A.READ, async (args) => {
     try { return jsonResult(await sessionSnapshot(args)); }
     catch (err) { return errorResult(err); }
   });
@@ -21,7 +24,9 @@ export function registerSnapshotTools(server) {
     include: z.array(z.string()).optional().describe('Restrict both collection and diff to these sections'),
     preset: z.string().optional().describe('Section preset (brief|analysis|strategy|pine_debug)'),
     study_filter: z.string().optional().describe('Filter Pine sections to one indicator'),
-  }, async ({ since, include, exclude, preset, study_filter }) => {
+  },
+    A.READ,
+    A.READ, async ({ since, include, exclude, preset, study_filter }) => {
     try { return jsonResult(await chartChanges({ since, include, exclude, preset, study_filter })); }
     catch (err) { return errorResult(err); }
   });

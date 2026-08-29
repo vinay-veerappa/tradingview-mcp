@@ -15,8 +15,10 @@ const enabledEnv = { [ARBITRARY_PAGE_JS_ENV]: ARBITRARY_PAGE_JS_ACK };
 function registeredUiEvaluate(deps) {
   const tools = new Map();
   const server = {
-    tool(name, description, schema, handler) {
-      tools.set(name, { description, schema, handler });
+    // annotations arg added: server.tool() now passes them before the handler
+    tool(name, description, schema, annotations, handler) {
+      if (typeof annotations === 'function') handler = annotations; // legacy 4-arg call
+      tools.set(name, { description, schema, annotations, handler });
     },
   };
   registerUiTools(server, deps);
