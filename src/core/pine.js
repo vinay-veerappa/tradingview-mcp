@@ -5,6 +5,66 @@
  */
 import { evaluate, evaluateAsync, getClient } from '../connection.js';
 
+/**
+ * Compile-button finder (injected into TV page).
+ *
+ * TradingView localises the Pine editor buttons, and the desktop build renders
+ * the label twice inside the button ("Add to chartAdd to chart"), so matching
+ * on visible textContent alone fails outside en-US. Check title and aria-label
+ * too — those carry the un-doubled label — and de-duplicate the text before
+ * comparing. Returns the canonical English action so callers stay locale-free.
+ *
+ * Deliberately never falls back to the plain Save button: saving is not compiling.
+ * "Save and add to chart" is used only when no plain add/update button exists, and
+ * is reported under its own name so callers can tell that a cloud save happened.
+ */
+const FIND_COMPILE_BUTTON = `
+  (function findCompileButton() {
+    var ADD = /(add to chart|dem chart hinzuf|zum chart hinzuf|ajouter au graphique|agregar al gr|aggiungi al grafico|adicionar ao gr|добавить на график|添加到图表|グラフに追加)/i;
+    var UPDATE = /(update on chart|auf dem chart aktualisier|chart aktualisier|mettre . jour sur le graphique|actualizar en el gr|aggiorna sul grafico|atualizar no gr|обновить на графике|更新图表)/i;
+    var SAVE_AND_ADD = /(save and add to chart|speichern und dem chart hinzuf)/i;
+
+    function labelsOf(el) {
+      var txt = (el.textContent || '').trim().replace(/\\s+/g, ' ');
+      // Collapse the doubled label ("FooFoo" -> "Foo").
+      var half = txt.length / 2;
+      if (txt.length > 1 && txt.length % 2 === 0 && txt.slice(0, half) === txt.slice(half)) {
+        txt = txt.slice(0, half);
+      }
+      return [txt, el.getAttribute('title') || '', el.getAttribute('aria-label') || ''];
+    }
+
+    var btns = document.querySelectorAll('button,[role="button"]');
+    var addBtn = null, updateBtn = null, saveAddBtn = null;
+
+    for (var i = 0; i < btns.length; i++) {
+      var el = btns[i];
+      if (el.offsetParent === null) continue;      // only the visible editor
+      if (el.disabled) continue;
+      var ls = labelsOf(el);
+      for (var j = 0; j < ls.length; j++) {
+        var l = ls[j];
+        if (!l) continue;
+        // Check save-and-add first: its label also contains "add to chart".
+        if (!saveAddBtn && SAVE_AND_ADD.test(l)) { saveAddBtn = el; break; }
+        if (!addBtn && ADD.test(l)) { addBtn = el; break; }
+        if (!updateBtn && UPDATE.test(l)) { updateBtn = el; break; }
+      }
+    }
+    // Prefer the buttons that compile without touching the user's saved scripts.
+    if (addBtn) return { el: addBtn, action: 'Add to chart' };
+    if (updateBtn) return { el: updateBtn, action: 'Update on chart' };
+    if (saveAddBtn) return { el: saveAddBtn, action: 'Save and add to chart' };
+    return null;
+  })
+`;
+
+// Root of the Pine Editor panel. Used to scope DOM lookups so we never touch the
+// chart's own controls (notably the chart-layout Save button, which shares the
+// "saveButton" class prefix with Pine's). Other classes in this subtree are
+// build-hashed (e.g. editorWrapper-mImut1T6) and unsafe to match on.
+const PINE_ROOT = '.tv-script-widget';
+
 // ── Monaco finder (injected into TV page) ──
 const FIND_MONACO = `
   (function findMonacoEditor() {
@@ -48,14 +108,20 @@ export async function ensurePineEditorOpen() {
   `);
   if (already) return true;
 
-  await evaluate(`
+  // 'scripteditor' is the widget's registered name; activateScriptEditorTab()
+  // silently no-ops while the widget is missing from the bar's enabled list
+  // (the state after the user closes the panel), so enable + show come first.
+  const OPEN_EDITOR = `
     (function() {
       var bwb = window.TradingView && window.TradingView.bottomWidgetBar;
-      if (!bwb) return;
+      if (!bwb) return false;
+      if (typeof bwb.setWidgetAvailability === 'function') bwb.setWidgetAvailability('scripteditor', true);
+      if (typeof bwb.showWidget === 'function') bwb.showWidget('scripteditor');
       if (typeof bwb.activateScriptEditorTab === 'function') bwb.activateScriptEditorTab();
-      else if (typeof bwb.showWidget === 'function') bwb.showWidget('pine-editor');
+      return true;
     })()
-  `);
+  `;
+  await evaluate(OPEN_EDITOR);
 
   await evaluate(`
     (function() {
@@ -65,10 +131,30 @@ export async function ensurePineEditorOpen() {
     })()
   `);
 
+  let remounted = false;
   for (let i = 0; i < 50; i++) {
     await new Promise(r => setTimeout(r, 200));
     const ready = await evaluate(`(function() { return ${FIND_MONACO} !== null; })()`);
     if (ready) return true;
+    // Stale mount: Monaco DOM is present but its subtree carries no React
+    // fiber keys, so FIND_MONACO can never succeed against it. Hide the bar
+    // and reopen once to force a fresh React-attached mount.
+    if (!remounted && i >= 15) {
+      const zombie = await evaluate(`!!document.querySelector('.monaco-editor.pine-editor-monaco')`);
+      if (zombie) {
+        await evaluate(`
+          (function() {
+            var bwb = window.TradingView && window.TradingView.bottomWidgetBar;
+            if (bwb && typeof bwb.hide === 'function') bwb.hide();
+          })()
+        `);
+        await new Promise(r => setTimeout(r, 400));
+        await evaluate(OPEN_EDITOR);
+        // Consume the one-shot only on an actual remount attempt, so a
+        // slow first mount that turns out fiber-less can still be recovered.
+        remounted = true;
+      }
+    }
   }
   return false;
 }
@@ -244,7 +330,19 @@ export async function check({ source }) {
 
 // ── Functions requiring TradingView connection ──
 
-export async function getSource() {
+/**
+ * Optionally truncate source to a character budget. Returns the (possibly
+ * truncated) text plus a flag. max_chars == null (the default) means no cap, so
+ * the historical full-source behavior is preserved for callers that need to edit.
+ */
+export function capSource(source, max_chars) {
+  if (max_chars == null) return { source, truncated: false };
+  const n = Number(max_chars);
+  if (!Number.isFinite(n) || n <= 0 || source.length <= n) return { source, truncated: false };
+  return { source: source.slice(0, n), truncated: true };
+}
+
+export async function getSource({ max_chars } = {}) {
   const editorReady = await ensurePineEditorOpen();
   if (!editorReady) throw new Error('Could not open Pine Editor or Monaco not found in React fiber tree.');
 
@@ -260,7 +358,16 @@ export async function getSource() {
     throw new Error('Monaco editor found but getValue() returned null.');
   }
 
-  return { success: true, source, line_count: source.split('\n').length, char_count: source.length };
+  const { source: returned, truncated } = capSource(source, max_chars);
+  return {
+    success: true,
+    source: returned,
+    // line_count / char_count always describe the FULL source so a caller that
+    // capped the output still learns the real size on the chart.
+    line_count: source.split('\n').length,
+    char_count: source.length,
+    ...(truncated && { truncated: true, returned_chars: returned.length }),
+  };
 }
 
 export async function setSource({ source }) {
@@ -287,25 +394,10 @@ export async function compile() {
 
   const clicked = await evaluate(`
     (function() {
-      var btns = document.querySelectorAll('button');
-      var fallback = null;
-      var saveBtn = null;
-      for (var i = 0; i < btns.length; i++) {
-        var text = btns[i].textContent.trim();
-        if (/save and add to chart/i.test(text)) {
-          btns[i].click();
-          return 'Save and add to chart';
-        }
-        if (!fallback && /^(Add to chart|Update on chart)/i.test(text)) {
-          fallback = btns[i];
-        }
-        if (!saveBtn && btns[i].className.indexOf('saveButton') !== -1 && btns[i].offsetParent !== null) {
-          saveBtn = btns[i];
-        }
-      }
-      if (fallback) { fallback.click(); return fallback.textContent.trim(); }
-      if (saveBtn) { saveBtn.click(); return 'Pine Save'; }
-      return null;
+      var hit = ${FIND_COMPILE_BUTTON}();
+      if (!hit) return null;
+      hit.el.click();
+      return hit.action;
     })()
   `);
 
@@ -426,7 +518,15 @@ export async function getConsole() {
   return { success: true, entries: entries || [], entry_count: entries?.length || 0 };
 }
 
-export async function smartCompile() {
+/**
+ * Compile / apply the current script to the chart.
+ *
+ * `allowSave` defaults to false and MUST stay that way: TradingView's Save
+ * button persists into the script slot the buffer is bound to, so an implicit
+ * Save here silently overwrites whichever saved script happens to be open.
+ * See upstream issue #395.
+ */
+export async function smartCompile({ allowSave = false } = {}) {
   const editorReady = await ensurePineEditorOpen();
   if (!editorReady) throw new Error('Could not open Pine Editor.');
 
@@ -442,23 +542,38 @@ export async function smartCompile() {
 
   const buttonClicked = await evaluate(`
     (function() {
-      var btns = document.querySelectorAll('button');
-      var addBtn = null;
-      var updateBtn = null;
+      var allowSave = ${allowSave ? 'true' : 'false'};
+      // Primary: locale-aware label matcher (title/aria-label + doubled-label
+      // de-duplication). Never falls back to Save on its own.
+      var hit = ${FIND_COMPILE_BUTTON}();
+      if (hit) { hit.el.click(); return hit.action; }
+      // Locale-independent structural fallback (upstream #487 + #463): when the
+      // UI language matches no label regex above, find the icon-only compile
+      // button ("noContent" class, no text) positioned immediately before
+      // the Save button inside the script toolbar row. Save is scoped to the
+      // Pine Editor panel root so the chart-layout Save is never clicked, and
+      // Save is only honoured when allowSave is true.
       var saveBtn = null;
+      var btns = document.querySelectorAll('button');
       for (var i = 0; i < btns.length; i++) {
-        var text = btns[i].textContent.trim();
-        if (/save and add to chart/i.test(text)) {
-          btns[i].click();
-          return 'Save and add to chart';
-        }
-        if (!addBtn && /^add to chart$/i.test(text)) addBtn = btns[i];
-        if (!updateBtn && /^update on chart$/i.test(text)) updateBtn = btns[i];
-        if (!saveBtn && btns[i].className.indexOf('saveButton') !== -1 && btns[i].offsetParent !== null) saveBtn = btns[i];
+        var cls = (typeof btns[i].className === 'string') ? btns[i].className : '';
+        if (cls.indexOf('saveButton') !== -1 && btns[i].offsetParent !== null && btns[i].closest('${PINE_ROOT}')) { saveBtn = btns[i]; break; }
       }
-      if (addBtn) { addBtn.click(); return 'Add to chart'; }
-      if (updateBtn) { updateBtn.click(); return 'Update on chart'; }
-      if (saveBtn) { saveBtn.click(); return 'Pine Save'; }
+      if (saveBtn) {
+        var row = saveBtn.closest('.tv-script-widget') || saveBtn.parentElement;
+        var rowBtns = row ? Array.prototype.slice.call(row.querySelectorAll('button')) : [];
+        var saveIdx = rowBtns.indexOf(saveBtn);
+        for (var j = saveIdx - 1; j >= 0; j--) {
+          if (rowBtns[j].className.indexOf('noContent') !== -1 && rowBtns[j].offsetParent !== null) {
+            rowBtns[j].click();
+            return 'Add to chart (structural)';
+          }
+        }
+        if (allowSave) {
+          saveBtn.click();
+          return 'Pine Save';
+        }
+      }
       return null;
     })()
   `);
@@ -505,33 +620,142 @@ export async function smartCompile() {
   };
 }
 
+/**
+ * Reads the Pine Editor's binding state: which saved script the buffer is
+ * currently attached to. Used to prove a new script was really created rather
+ * than the open script being silently overwritten.
+ */
+const READ_BINDING = `
+  (function() {
+    var out = { title: null, saveState: null };
+    var root = document.querySelector('${PINE_ROOT}');
+    if (!root) return out;
+    var titleEl = root.querySelector('button[class*="nameButton"]');
+    if (titleEl) out.title = titleEl.textContent.trim();
+    // A bound script shows a version stamp like "8 ∙ Today, 03:02"; an unsaved
+    // one shows "Unsaved version". Separator glyph varies (· / ∙ / •),
+    // so match "digits + any non-alphanumeric separator" rather than a literal.
+    var els = root.querySelectorAll('button,div,span');
+    for (var i = 0; i < els.length; i++) {
+      var t = els[i].textContent;
+      if (!t) continue;
+      t = t.trim();
+      if (/^unsaved/i.test(t) || /^[0-9]+\\s*[^0-9A-Za-z\\s]/.test(t)) { out.saveState = t; break; }
+    }
+    return out;
+  })()
+`;
+
 export async function newScript({ type }) {
   const editorReady = await ensurePineEditorOpen();
   if (!editorReady) throw new Error('Could not open Pine Editor.');
 
   const typeMap = { indicator: 'indicator', strategy: 'strategy', library: 'library' };
-  const templates = {
-    indicator: '//@version=6\nindicator("My script")\nplot(close)',
-    strategy: '//@version=6\nstrategy("My strategy", overlay=true)\n',
-    library: '//@version=6\n// @description TODO: add library description here\nlibrary("MyLibrary")\n',
+  // Submenu labels carry their shortcut inline ("Indicator⌘ K, ⌘ I"), so anchor
+  // at the start only. "Built-in…" sits in the same submenu and must not match.
+  const patterns = {
+    indicator: '^indicator',
+    strategy: '^strategy',
+    library: '^library',
   };
+  const wanted = patterns[type] || patterns.indicator;
 
-  const template = templates[type] || templates.indicator;
+  const before = await evaluate(READ_BINDING);
 
-  // Simply set the source to a new template — this is the most reliable approach
-  const escaped = JSON.stringify(template);
-  const set = await evaluate(`
+  // Per TradingView docs, "Create new -> indicator/strategy/library" lives in the
+  // script-NAME dropdown (the script title in the Pine Editor header). Older/other
+  // builds surface it under the "..." (More) button, so try the title first and
+  // fall back to More. Both are scoped to the Pine Editor subtree so we never hit
+  // the chart toolbar's own "More" button.
+  const menuOpened = await evaluate(`
     (function() {
-      var m = ${FIND_MONACO};
-      if (!m) return false;
-      m.editor.setValue(${escaped});
-      return true;
+      var root = document.querySelector('${PINE_ROOT}');
+      if (!root) return false;
+      // The script-name control is the dropdown holding Create new / Make a copy /
+      // Version history. It is a DIV[role=button], NOT a <button>, so do not
+      // restrict by tag. Class suffixes are build-hashed; match on the prefix.
+      var title = Array.prototype.slice.call(
+        root.querySelectorAll('[class*="nameButton"]')
+      ).filter(function(e) { return e.offsetParent !== null; })[0];
+      if (title) { title.click(); return 'title-dropdown'; }
+      var more = Array.prototype.slice.call(
+        root.querySelectorAll('button[aria-label="More"], button[data-name*="menu"], button[aria-label*="menu" i]')
+      ).filter(function(b) { return b.offsetParent !== null; });
+      if (more[0]) { more[0].click(); return 'more-button'; }
+      return false;
     })()
   `);
 
-  if (!set) throw new Error('Monaco editor not found. Ensure Pine Editor is open.');
+  if (!menuOpened) {
+    throw new Error(
+      'Could not open the Pine Editor script menu (looked for the script-name dropdown, then "More") ' +
+      `inside ${PINE_ROOT}. Refusing to fall back to overwriting the open script.`
+    );
+  }
 
-  return { success: true, type, action: 'new_script_created', template: typeMap[type] };
+  await new Promise(r => setTimeout(r, 400));
+
+  // "Create new" opens a submenu; the type lives one level down. Only ever click
+  // items matching these exact patterns — the same menu holds destructive entries.
+  const MENU_SEL = '[role="menuitem"], [class*="item-"], [class*="label-"]';
+  const clickMenuItem = (pattern) => evaluate(`
+    (function() {
+      var re = new RegExp(${JSON.stringify('PLACEHOLDER')}, 'i');
+      var nodes = document.querySelectorAll('${MENU_SEL}');
+      for (var i = 0; i < nodes.length; i++) {
+        var n = nodes[i];
+        if (n.offsetParent === null) continue;
+        var t = (n.textContent || '').trim();
+        if (t.length > 40) continue;
+        if (re.test(t)) { n.click(); return t; }
+      }
+      return null;
+    })()
+  `.replace(JSON.stringify('PLACEHOLDER'), JSON.stringify(pattern)));
+
+  const submenuOpened = await clickMenuItem('^create new$');
+  if (!submenuOpened) {
+    await evaluate(`(function(){ document.body.click(); return true; })()`);
+    throw new Error('Could not find "Create new" in the Pine Editor script menu. Refusing to fall back to overwriting the open script.');
+  }
+
+  await new Promise(r => setTimeout(r, 400));
+
+  const itemClicked = await clickMenuItem(wanted);
+
+  if (!itemClicked) {
+    // Close the menu so we do not leave the UI in a half-open state.
+    await evaluate(`(function(){ document.body.click(); return true; })()`);
+    throw new Error(
+      'Could not find a "' + type + '" item in the Pine Editor "Create new" submenu. ' +
+      'Refusing to fall back to overwriting the open script.'
+    );
+  }
+
+  await new Promise(r => setTimeout(r, 900));
+
+  const after = await evaluate(READ_BINDING);
+
+  // A genuinely new script is unsaved and carries no version stamp. If the buffer
+  // is still bound to the previously open script, fail loudly — a later save
+  // would otherwise overwrite the user's script.
+  const stillBound = after?.saveState && /^\d+\s*·/.test(after.saveState);
+  if (stillBound) {
+    throw new Error(
+      'Pine Editor still reports a saved script ("' + after.saveState + '") after requesting a new script. ' +
+      'Aborting: saving now would overwrite the open script.'
+    );
+  }
+
+  return {
+    success: true,
+    type,
+    action: 'new_script_created',
+    template: typeMap[type],
+    menu_item: itemClicked,
+    binding_before: before,
+    binding_after: after,
+  };
 }
 
 export async function openScript({ name }) {

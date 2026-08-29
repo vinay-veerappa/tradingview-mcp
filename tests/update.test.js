@@ -6,7 +6,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { update } from '../src/core/update.js';
+import { classifyUpdate } from '../src/core/health.js';
 
+import { SELF_UPDATE_ACK, SELF_UPDATE_ENV } from '../src/capabilities.js';
+
+const OPTIN_ENV = { [SELF_UPDATE_ENV]: SELF_UPDATE_ACK };
 const OLD = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const NEW = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 
@@ -38,7 +42,7 @@ function gitDeps({ branch = 'main', dirty = '', remoteSha = OLD, ahead = 0, behi
       throw new Error(`unexpected cmd: ${cmd}`);
     },
   };
-  return { deps, state };
+  return { deps: { ...deps, env: OPTIN_ENV }, state };
 }
 
 describe('update() — guards', () => {
@@ -123,5 +127,49 @@ describe('update() — update paths', () => {
     assert.equal(r.updated, true);
     assert.equal(r.deps_installed, false);
     assert.match(r.warning, /npm ci failed/);
+  });
+});
+
+// ── Update classification (health check) ─────────────────────────────────
+
+describe('classifyUpdate() — ahead vs behind', () => {
+  it('reports neither when the SHAs match, without shelling out', () => {
+    const calls = [];
+    const result = classifyUpdate(OLD, OLD, (args) => { calls.push(args); return ''; });
+    assert.deepEqual(result, { behind: false, ahead: 0 });
+    assert.equal(calls.length, 0, 'no git call is needed when the SHAs match');
+  });
+
+  // The regression: local main carrying unpushed commits means origin's HEAD is an
+  // ancestor of local HEAD. A raw SHA inequality called that an available update and
+  // sent the user to tv_update, which then refuses because it cannot fast-forward.
+  it('treats an ancestor remote as ahead, not as an available update', () => {
+    const git = (args) => {
+      if (args.startsWith('merge-base --is-ancestor')) return '';
+      if (args.startsWith('rev-list --count')) return '2';
+      throw new Error(`unexpected git call: ${args}`);
+    };
+    assert.deepEqual(classifyUpdate(NEW, OLD, git), { behind: false, ahead: 2 });
+  });
+
+  it('reports behind when the remote commit is not an ancestor', () => {
+    const git = (args) => {
+      if (args.startsWith('merge-base --is-ancestor')) throw new Error('exit status 1');
+      throw new Error(`unexpected git call: ${args}`);
+    };
+    assert.deepEqual(classifyUpdate(OLD, NEW, git), { behind: true, ahead: 0 });
+  });
+
+  it('reports behind when the remote commit is absent from the local object DB', () => {
+    const git = () => { throw new Error('fatal: Not a valid object name'); };
+    assert.deepEqual(classifyUpdate(OLD, NEW, git), { behind: true, ahead: 0 });
+  });
+
+  it('never passes a non-hex remote sha to git', () => {
+    const calls = [];
+    const git = (args) => { calls.push(args); return ''; };
+    const result = classifyUpdate(OLD, 'abc123 && echo pwned', git);
+    assert.deepEqual(result, { behind: false, ahead: 0 });
+    assert.equal(calls.length, 0, 'a malformed sha must never reach a shell command');
   });
 });

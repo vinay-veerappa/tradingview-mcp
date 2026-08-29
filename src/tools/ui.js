@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { jsonResult } from './_format.js';
 import * as core from '../core/ui.js';
 
-export function registerUiTools(server) {
+export function registerUiTools(server, { env = process.env, evaluate } = {}) {
   server.tool('ui_click', 'Click a UI element by aria-label, data-name, text content, or class substring', {
     by: z.enum(['aria-label', 'data-name', 'text', 'class-contains']).describe('Selector strategy'),
     value: z.string().describe('Value to match against the chosen selector strategy'),
@@ -29,11 +29,17 @@ export function registerUiTools(server) {
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
-  server.tool('layout_switch', 'Switch to a saved chart layout by name or ID', {
+  server.tool('layout_switch', 'Switch to a saved chart layout by name or ID and verify the loaded chart state', {
     name: z.string().describe('Name or ID of the layout to switch to'),
-  }, async ({ name }) => {
-    try { return jsonResult(await core.layoutSwitch({ name })); }
-    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+    expected_pane_signature: z.string().optional().describe('Optional exact pane signature returned by a prior verified switch (for example: 4|1D,1D,1D,1D)'),
+    expected_symbol: z.string().optional().describe('Optional symbol that must be rendered in every chart pane'),
+  }, async ({ name, expected_pane_signature, expected_symbol }) => {
+    try {
+      const result = await core.layoutSwitch({ name, expected_pane_signature, expected_symbol });
+      return jsonResult(result, !result.success);
+    } catch (err) {
+      return jsonResult({ success: false, reason: err.reason || 'chart_api_not_ready', error: err.message }, true);
+    }
   });
 
   server.tool('ui_keyboard', 'Press keyboard keys or shortcuts (e.g., Enter, Escape, Alt+S, Ctrl+Z)', {
@@ -85,10 +91,10 @@ export function registerUiTools(server) {
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
-  server.tool('ui_evaluate', 'Execute JavaScript code in the TradingView page context for advanced automation', {
-    expression: z.string().describe('JavaScript expression to evaluate in the page context. Wrap in IIFE for complex logic.'),
+  server.tool('ui_evaluate', 'DANGEROUS: Execute arbitrary JavaScript in the TradingView page context. Disabled by default; requires an explicit startup capability opt-in.', {
+    expression: z.string().min(1).describe('JavaScript expression to evaluate in the page context. Wrap in IIFE for complex logic.'),
   }, async ({ expression }) => {
-    try { return jsonResult(await core.uiEvaluate({ expression })); }
+    try { return jsonResult(await core.uiEvaluate({ expression, _deps: { env, evaluate } })); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 }

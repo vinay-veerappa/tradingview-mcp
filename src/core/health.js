@@ -5,17 +5,47 @@ import { getClient, getTargetInfo, evaluate, CDP_HOST, CDP_PORT } from '../conne
 import { existsSync, cpSync, rmSync, readdirSync } from 'fs';
 import { execSync, spawn } from 'child_process';
 import { dirname, basename, join } from 'path';
+import { fileURLToPath } from 'url';
 
 // Best-effort git-pull update check: compare local HEAD to origin's default
 // branch on GitHub. Never throws — returns null on any failure (offline,
 // detached HEAD, not a git checkout) so it can't break the health check.
 let _updateCache = null;
+
+const SHA_RE = /^[0-9a-f]{7,40}$/i;
+
+/**
+ * Decide what origin's HEAD means relative to local HEAD.
+ *
+ * A raw SHA inequality is not enough. When local carries commits that aren't on
+ * origin, origin's HEAD is an *ancestor* of local HEAD — that is being ahead, not
+ * behind — yet inequality reports it as an available update and points the user at
+ * tv_update, which then refuses because it cannot fast-forward.
+ *
+ * `git` is injected so this is unit-testable, and must throw on a non-zero exit
+ * (execSync semantics). A remote commit that isn't in the local object DB makes
+ * merge-base throw, which falls through to "behind" — the safe default, since we
+ * cannot prove we already have it.
+ */
+export function classifyUpdate(localSha, remoteSha, git) {
+  if (remoteSha === localSha) return { behind: false, ahead: 0 };
+  // Network-sourced value heading into a shell command — never interpolate it raw.
+  if (!SHA_RE.test(remoteSha)) return { behind: false, ahead: 0 };
+  try {
+    git(`merge-base --is-ancestor ${remoteSha} HEAD`);
+    return { behind: false, ahead: Number(git(`rev-list --count ${remoteSha}..HEAD`)) || 0 };
+  } catch {
+    return { behind: true, ahead: 0 };
+  }
+}
+
 async function checkForUpdate() {
   if (_updateCache && (Date.now() - _updateCache.at) < 3600_000) return _updateCache.value;
   let value = null;
   try {
-    const localSha = execSync('git rev-parse HEAD', { timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
-    const remoteUrl = execSync('git config --get remote.origin.url', { timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+    const git = (args) => execSync(`git ${args}`, { timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+    const localSha = git('rev-parse HEAD');
+    const remoteUrl = git('config --get remote.origin.url');
     const m = remoteUrl.match(/github\.com[:/](.+?)(?:\.git)?$/);
     if (localSha && m) {
       const repo = m[1];
@@ -29,11 +59,16 @@ async function checkForUpdate() {
         req.setTimeout(3000, () => { req.destroy(); resolve(null); });
       });
       if (remoteSha) {
+        // Both #456 and #455 fixed the phantom-update bug independently;
+        // ours (456) is the superset: the same ancestor check plus a ahead
+        // count surfaced as local_ahead.
+        const { behind, ahead } = classifyUpdate(localSha, remoteSha, git);
         value = {
-          update_available: remoteSha !== localSha,
+          update_available: behind,
           local_commit: localSha.slice(0, 8),
           latest_commit: remoteSha.slice(0, 8),
-          ...(remoteSha !== localSha && { hint: 'Run the tv_update tool (or `tv update` CLI) to update, then restart the MCP server.' }),
+          ...(ahead > 0 && { local_ahead: ahead }),
+          ...(behind && { hint: 'Run the tv_update tool (or `tv update` CLI) to update, then restart the MCP server.' }),
         };
       }
     }
@@ -64,7 +99,7 @@ export async function healthCheck() {
       }
       return result;
     })()
-  `);
+  `, { retry: true });
 
   const update = await checkForUpdate();
 
@@ -120,7 +155,7 @@ export async function discover() {
       } catch(e) { results.alertService = { available: false, error: e.message }; }
       return results;
     })()
-  `);
+  `, { retry: true });
 
   const available = Object.values(paths).filter(v => v.available).length;
   const total = Object.keys(paths).length;
@@ -194,7 +229,7 @@ export async function uiState() {
       } catch(e) { ui.replay = { error: e.message }; }
       return ui;
     })()
-  `);
+  `, { retry: true });
 
   return { success: true, ...state };
 }
@@ -211,7 +246,32 @@ function _resolveLaunchDeps(deps) {
     readdirSync: deps?.readdirSync || readdirSync,
     delay: deps?.delay || ((ms) => new Promise((r) => setTimeout(r, ms))),
     probeCdp: deps?.probeCdp || _probeCdp,
+    activateMsix: deps?.activateMsix || _activateMsix,
   };
+}
+
+/**
+ * COM-activate the MSIX package with the CDP flag, via scripts/activate_msix.ps1.
+ *
+ * WindowsApps ACLs allow execution only through package activation, and shell
+ * activation cannot pass arguments — IApplicationActivationManager is the one path
+ * that forwards an argument string to a full-trust exe. Cheaper than the local-copy
+ * fallback below (no multi-hundred-MB copy) so it is tried first, but it does not
+ * work on every Windows build, hence the fallback stays.
+ *
+ * Returns the activated pid, or null if the script produced no parseable output.
+ */
+function _activateMsix(cdpPort, { execSync: exec }) {
+  const script = fileURLToPath(new URL('../../scripts/activate_msix.ps1', import.meta.url));
+  const out = exec(
+    `powershell -NoProfile -ExecutionPolicy Bypass -STA -File "${script}" -Port ${cdpPort}`,
+    { timeout: 30000, stdio: ['ignore', 'pipe', 'ignore'] },
+  ).toString().trim();
+  try {
+    return JSON.parse(out).pid ?? null;
+  } catch {
+    return null;
+  }
 }
 
 async function _probeCdp(cdpPort) {
@@ -273,7 +333,10 @@ function _copyMsixPackageLocal(tvPath, { cpSync, rmSync, readdirSync, existsSync
   if (!existsSync(dstExe)) {
     try {
       for (const entry of readdirSync(cacheRoot)) {
-        if (entry !== pkgName && /^TradingView\./i.test(entry)) {
+        // Match anywhere in the name, not just the prefix (from #485): real
+        // Store packages are publisher-prefixed (31178TradingViewInc.TradingView_...),
+        // and stale copies would otherwise pile up at ~330MB each.
+        if (entry !== pkgName && /TradingView/i.test(entry)) {
           rmSync(join(cacheRoot, entry), { recursive: true, force: true });
         }
       }
@@ -323,9 +386,18 @@ export async function launch({ port, kill_existing, _deps } = {}) {
   if (!tvPath && platform === 'win32') {
     // MSIX/Windows Store install — InstallLocation is in WindowsApps, which is ACL-restricted
     // for normal `dir` enumeration but readable via Get-AppxPackage without elevation.
+    // Wildcard match: the Store listing publishes under a numeric-publisher name
+    // (e.g. 31178TradingViewInc.TradingView), not just TradingView.Desktop.
+    // (Merged from our e98ffa56 patch — now routed through deps so unit tests can
+    // mock it; the wildcard already subsumes the old exact-name query.)
     try {
-      const ps = 'powershell -NoProfile -Command "(Get-AppxPackage -Name \'TradingView.Desktop\' -ErrorAction SilentlyContinue).InstallLocation"';
-      const installDir = deps.execSync(ps, { timeout: 5000 }).toString().trim();
+      // 20s, not 5s (from #437): Get-AppxPackage plus PowerShell startup measured
+      // 6.1-7.8s on a normal Windows 11 box, so a 5s budget killed this call every
+      // time and MSIX installs were never found. -NonInteractive so it can never
+      // block on a prompt and burn the whole budget. Wildcard match (from #485):
+      // the Store listing publishes under a publisher-prefixed package name.
+      const ps = 'powershell -NoProfile -NonInteractive -Command "(Get-AppxPackage -Name \'*TradingView*\' -ErrorAction SilentlyContinue | Select-Object -First 1).InstallLocation"';
+      const installDir = deps.execSync(ps, { timeout: 20000 }).toString().trim();
       if (installDir) {
         const candidate = `${installDir}\\TradingView.exe`;
         if (deps.existsSync(candidate)) tvPath = candidate;
@@ -333,29 +405,15 @@ export async function launch({ port, kill_existing, _deps } = {}) {
     } catch { /* ignore */ }
   }
 
-  // Windows Store (MSIX) detection — version-independent.
-  // Get-AppxPackage queries the MSIX package registry, so it works across
-  // TradingView updates without needing a hardcoded version path.
-  // C:\Program Files\WindowsApps is permission-locked for normal processes,
-  // so readdirSync won't work there — this PowerShell query is the reliable way.
-  if (!tvPath && platform === 'win32') {
-    try {
-      const appxCmd = `powershell -NoProfile -Command "(Get-AppxPackage -Name 'TradingView.Desktop').InstallLocation"`;
-      const appxLoc = execSync(appxCmd, { timeout: 8000 }).toString().trim();
-      if (appxLoc) {
-        const appxExe = `${appxLoc}\\TradingView.exe`;
-        if (existsSync(appxExe)) tvPath = appxExe;
-      }
-    } catch { /* TradingView MSIX package not installed */ }
-  }
-
   // Secondary fallback: query the running process path via WMI.
   // Works if TradingView is already running, regardless of install method.
+  // Routed through deps.* like everything above so the "not found" unit test
+  // (which mocks execSync to throw) reaches the throw instead of spawning.
   if (!tvPath && platform === 'win32') {
     try {
       const wmiCmd = `powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \\"Name='TradingView.exe'\\" | Select-Object -First 1 -ExpandProperty ExecutablePath"`;
-      const wmiPath = execSync(wmiCmd, { timeout: 8000 }).toString().trim();
-      if (wmiPath && existsSync(wmiPath)) tvPath = wmiPath;
+      const wmiPath = deps.execSync(wmiCmd, { timeout: 8000 }).toString().trim();
+      if (wmiPath && deps.existsSync(wmiPath)) tvPath = wmiPath;
     } catch { /* TradingView not running or WMI unavailable */ }
   }
 
@@ -383,8 +441,10 @@ export async function launch({ port, kill_existing, _deps } = {}) {
 
   const killExisting = async () => {
     try {
-      if (platform === 'win32') deps.execSync('taskkill /F /IM TradingView.exe', { timeout: 5000 });
-      else deps.execSync('pkill -f TradingView', { timeout: 5000 });
+      // stdio ignored: taskkill/pkill write "process not found" to stderr when
+      // nothing is running, which is the normal case and not worth showing.
+      if (platform === 'win32') deps.execSync('taskkill /F /IM TradingView.exe', { timeout: 5000, stdio: 'ignore' });
+      else deps.execSync('pkill -f TradingView', { timeout: 5000, stdio: 'ignore' });
       await deps.delay(1500);
     } catch { /* may not be running */ }
   };
@@ -392,20 +452,58 @@ export async function launch({ port, kill_existing, _deps } = {}) {
   if (killFirst) await killExisting();
 
   const cdpArgs = [`--remote-debugging-port=${cdpPort}`];
-  let child = _spawnDetached(deps.spawn, tvPath, cdpArgs);
+  // Windows refuses direct execution of WindowsApps binaries by raising EPERM
+  // synchronously from spawn() (not via an async 'error' event), so the throw
+  // must be caught here for the MSIX recovery below to be reachable at all.
+  // A classic install that cannot be spawned has no fallback — throw immediately.
+  const isWindowsApps = platform === 'win32' && WINDOWS_APPS_RE.test(tvPath);
+  let child = null;
+  let syncSpawnError = null;
+  try {
+    child = _spawnDetached(deps.spawn, tvPath, cdpArgs);
+  } catch (err) {
+    if (!isWindowsApps) throw err;
+    syncSpawnError = err;
+  }
+
   let info = null;
   let usedLocalCopy = false;
+  let usedActivation = false;
+  let activatedPid = null;
 
-  if (platform === 'win32' && WINDOWS_APPS_RE.test(tvPath)) {
-    const earlyFailure = await _spawnFailedEarly(child);
+  if (isWindowsApps) {
+    const earlyFailure = syncSpawnError
+      ? (syncSpawnError.code || syncSpawnError.message)
+      : await _spawnFailedEarly(child);
     if (!earlyFailure) {
       info = await _waitForCdp({ cdpPort, attempts: 15, delay: deps.delay, probeCdp: deps.probeCdp });
     }
     if (!info) {
-      // Direct WindowsApps launch was blocked or CDP never bound — fall back to
-      // a local copy of the package (see _copyMsixPackageLocal).
+      // Direct WindowsApps spawn is normally denied by ACL. COM activation is the
+      // cheap way through — no copy — so try it before duplicating the package.
+      // Activation only applies the flag when nothing is running: the single-instance
+      // lock otherwise makes it focus the existing window and silently drop it. Honour
+      // kill_existing:false anyway and let activation fail into the copy fallback,
+      // rather than killing an instance the caller asked us to leave alone.
+      try {
+        if (killFirst) await killExisting();
+        activatedPid = deps.activateMsix(cdpPort, deps);
+        usedActivation = true;
+        info = await _waitForCdp({ cdpPort, attempts: 15, delay: deps.delay, probeCdp: deps.probeCdp });
+      } catch {
+        usedActivation = false;
+      }
+    }
+    if (!info) {
+      // Activation unavailable, or it accepted the flag without ever binding the
+      // port — fall back to a local copy of the package (see _copyMsixPackageLocal).
+      usedActivation = false;
+      activatedPid = null;
       const localExe = _copyMsixPackageLocal(tvPath, deps);
-      await killExisting();
+      // Same contract as above: never kill an instance the caller asked us to keep.
+      // Without the kill the copy will usually lose to the single-instance lock and
+      // bind no port, which surfaces as the cdp_ready:false warning below.
+      if (killFirst) await killExisting();
       child = _spawnDetached(deps.spawn, localExe, cdpArgs);
       tvPath = localExe;
       usedLocalCopy = true;
@@ -418,15 +516,17 @@ export async function launch({ port, kill_existing, _deps } = {}) {
 
   if (info) {
     return {
-      success: true, platform, binary: tvPath, pid: child.pid,
+      success: true, platform, binary: tvPath, pid: activatedPid ?? child?.pid,
       cdp_port: cdpPort, cdp_url: `http://${CDP_HOST}:${cdpPort}`,
       browser: info.Browser, user_agent: info['User-Agent'],
+      ...(usedActivation && { msix_activation: true }),
       ...(usedLocalCopy && { msix_local_copy: true }),
     };
   }
 
   return {
-    success: true, platform, binary: tvPath, pid: child.pid, cdp_port: cdpPort, cdp_ready: false,
+    success: true, platform, binary: tvPath, pid: activatedPid ?? child?.pid, cdp_port: cdpPort, cdp_ready: false,
+    ...(usedActivation && { msix_activation: true }),
     ...(usedLocalCopy && { msix_local_copy: true }),
     warning: 'TradingView launched but CDP not responding yet. It may still be loading. Try tv_health_check in a few seconds.',
   };

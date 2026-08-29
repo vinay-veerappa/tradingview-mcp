@@ -3,12 +3,25 @@
  * Zero dependencies — uses only Node.js built-ins.
  */
 import { parseArgs } from 'node:util';
+import { disconnect } from '../connection.js';
 
 /** @type {Map<string, { description: string, options?: object, handler: Function, subcommands?: Map<string, object> }>} */
 const commands = new Map();
 
 export function register(name, config) {
   commands.set(name, config);
+}
+
+/**
+ * Test seam (from #429): resolves a registered command's handler without
+ * spawning a CLI process, so capability-gate tests can drive the exact
+ * production code path in-process.
+ */
+export function getRegisteredHandler(name, subcommand) {
+  const cmd = commands.get(name);
+  if (!cmd) return null;
+  if (cmd.subcommands && subcommand) return cmd.subcommands.get(subcommand)?.handler || null;
+  return cmd.handler || null;
 }
 
 function printHelp() {
@@ -128,23 +141,43 @@ export async function run(argv) {
   }
 }
 
-async function execute(handler, values, positionals) {
+export async function execute(handler, values, positionals, {
+  disconnect: disconnectFn = disconnect,
+  log = console.log,
+} = {}) {
+  let result;
+  let handlerError;
+  let succeeded = false;
+
   try {
-    const result = await handler(values, positionals);
-    console.log(JSON.stringify(result, null, 2));
-    process.exit(0);
+    result = await handler(values, positionals);
+    succeeded = true;
   } catch (err) {
-    handleError(err);
+    handlerError = err;
+  } finally {
+    try {
+      await disconnectFn();
+    } catch {
+      // Best-effort cleanup must not replace the handler result or error.
+    }
   }
+
+  if (!succeeded) return handleError(handlerError, false);
+
+  log(JSON.stringify(result, null, 2));
+  process.exitCode = result?.success === false ? 1 : 0;
 }
 
-function handleError(err) {
+function handleError(err, exitImmediately = true) {
   const message = err.message || String(err);
   // Connection failures get exit code 2
   if (/CDP|connection|ECONNREFUSED|not running/i.test(message)) {
     console.error(JSON.stringify({ success: false, error: message }, null, 2));
-    process.exit(2);
+    if (exitImmediately) process.exit(2);
+    process.exitCode = 2;
+    return;
   }
   console.error(JSON.stringify({ success: false, error: message }, null, 2));
-  process.exit(1);
+  if (exitImmediately) process.exit(1);
+  process.exitCode = 1;
 }

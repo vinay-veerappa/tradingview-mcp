@@ -7,10 +7,32 @@
  */
 import { evaluate, evaluateAsync, getClient } from '../connection.js';
 
+function requireSymbol(symbol) {
+  if (typeof symbol !== 'string' || symbol.trim() === '') {
+    throw new Error('symbol must be a non-empty string');
+  }
+}
+
+function requireSymbolList(symbols) {
+  if (!Array.isArray(symbols) || symbols.length === 0) {
+    throw new Error('symbols must be a non-empty array');
+  }
+  for (const s of symbols) {
+    if (typeof s !== 'string' || s.trim() === '') {
+      throw new Error('each symbol must be a non-empty string');
+    }
+  }
+}
+
 // TV renamed the right-rail button: current builds use data-name="base" with
 // aria-label "Watchlist, details, and news"; older builds used
 // data-name="base-watchlist-widget-button" / aria-label "Watchlist".
+// data-name is locale-independent; the aria-label is translated (zh-CN renders
+// "自选表、详情和新闻"), so match data-name first and keep the labels as a
+// fallback for builds that lack it. The "base" lookup is scoped to the
+// widgetbar because that value is generic enough to collide elsewhere.
 const WL_BUTTON_JS = `(document.querySelector('[data-name="base-watchlist-widget-button"]')
+  || document.querySelector('[class*="widgetbar"] [data-name="base"]')
   || document.querySelector('[aria-label="Watchlist, details, and news"]')
   || document.querySelector('[aria-label^="Watchlist"]'))`;
 
@@ -116,6 +138,7 @@ export async function get() {
 }
 
 export async function add({ symbol }) {
+  requireSymbol(symbol);
   const c = await getClient();
   await ensureWatchlistOpen();
 
@@ -158,6 +181,7 @@ export async function add({ symbol }) {
 }
 
 export async function addBulk({ symbols }) {
+  requireSymbolList(symbols);
   const results = [];
   for (const symbol of symbols) {
     try {
@@ -172,6 +196,7 @@ export async function addBulk({ symbols }) {
 }
 
 export async function remove({ symbols }) {
+  requireSymbolList(symbols);
   await ensureWatchlistOpen();
   const listInfo = await getActiveListInfo();
   if (!listInfo) throw new Error('Cannot read active watchlist metadata (React fiber probe failed)');

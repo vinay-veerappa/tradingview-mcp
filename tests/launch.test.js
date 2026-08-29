@@ -25,12 +25,17 @@ function mockChild({ failWith } = {}) {
 /**
  * Build a _deps bundle simulating a win32 MSIX environment.
  * @param {object} opts
- *   spawnFailures — spawn paths (substring) that emit EACCES
- *   cdpBindsFor  — spawn paths (substring) after which probeCdp starts succeeding
- *   copyExists   — local copy already present
+ *   spawnFailures   — spawn paths (substring) that emit EACCES
+ *   cdpBindsFor    — spawn paths (substring) after which probeCdp starts succeeding
+ *   copyExists     — local copy already present
+ *   activationBinds — COM activation succeeds and CDP binds after it
+ *   activationThrows — COM activation fails (e.g. ERROR_CANCELLED on some builds)
  */
-function msixDeps({ spawnFailures = [], cdpBindsFor = [], copyExists = false } = {}) {
-  const state = { spawned: [], copies: [], removed: [], killed: 0, cdpUp: false };
+function msixDeps({
+  spawnFailures = [], cdpBindsFor = [], copyExists = false,
+  activationBinds = false, activationThrows = false, syncThrowFor = [],
+} = {}) {
+  const state = { spawned: [], copies: [], removed: [], killed: 0, cdpUp: false, activations: 0 };
   const deps = {
     existsSync: (p) => {
       if (p === MSIX_EXE) return true;
@@ -46,9 +51,20 @@ function msixDeps({ spawnFailures = [], cdpBindsFor = [], copyExists = false } =
     },
     spawn: (exe) => {
       state.spawned.push(exe);
+      // Windows throws EPERM synchronously for WindowsApps binaries; other failures
+      // surface as an async 'error' event. Both must be survivable.
+      if (syncThrowFor.some((s) => exe.includes(s))) {
+        throw Object.assign(new Error('spawn EPERM'), { code: 'EPERM' });
+      }
       const fail = spawnFailures.some((s) => exe.includes(s));
       if (!fail && cdpBindsFor.some((s) => exe.includes(s))) state.cdpUp = true;
       return mockChild(fail ? { failWith: 'EACCES' } : {});
+    },
+    activateMsix: () => {
+      state.activations++;
+      if (activationThrows) throw new Error('ActivateApplication failed: 0x800704C7');
+      if (activationBinds) state.cdpUp = true;
+      return 4242;
     },
     cpSync: (src, dst) => { state.copies.push({ src, dst }); },
     rmSync: (p) => { state.removed.push(p); },
@@ -70,7 +86,79 @@ describe('launch() — MSIX WindowsApps handling', { skip: !onWindows }, () => {
     assert.equal(result.binary, MSIX_EXE);
     assert.equal(result.msix_local_copy, undefined);
     assert.equal(state.copies.length, 0);
+    // nothing extra is attempted when the direct spawn already works
+    assert.equal(state.activations, 0);
     assert.equal(result.cdp_url, 'http://127.0.0.1:9222');
+  });
+
+  it('a synchronous EPERM from spawn still reaches activation', async () => {
+    // Regression: spawn() throwing synchronously (what Windows actually does for
+    // WindowsApps binaries) escaped launch() before any MSIX recovery could run,
+    // so tv_launch failed outright with "spawn EPERM".
+    const { deps, state } = msixDeps({ syncThrowFor: ['WindowsApps'], activationBinds: true });
+    const result = await launch({ _deps: deps });
+    assert.equal(result.success, true);
+    assert.equal(result.msix_activation, true);
+    assert.equal(state.activations, 1);
+    assert.equal(result.pid, 4242);
+  });
+
+  it('a synchronous EPERM still reaches the local-copy fallback', async () => {
+    const { deps, state } = msixDeps({ syncThrowFor: ['WindowsApps'], cdpBindsFor: ['tradingview-mcp'] });
+    const result = await launch({ _deps: deps });
+    assert.equal(result.success, true);
+    assert.equal(result.msix_local_copy, true);
+    assert.equal(state.copies.length, 1);
+  });
+
+  it('COM activation binds CDP without copying the package', async () => {
+    const { deps, state } = msixDeps({ spawnFailures: ['WindowsApps'], activationBinds: true });
+    const result = await launch({ _deps: deps });
+    assert.equal(result.success, true);
+    assert.equal(result.msix_activation, true);
+    assert.equal(result.msix_local_copy, undefined);
+    assert.equal(state.activations, 1);
+    assert.equal(state.copies.length, 0);
+    // the real install is used, not a duplicate
+    assert.equal(result.binary, MSIX_EXE);
+    // pid comes from ActivateApplication, not the denied direct spawn
+    assert.equal(result.pid, 4242);
+  });
+
+  it('kill_existing:false is honoured on the activation path', async () => {
+    const { deps, state } = msixDeps({ spawnFailures: ['WindowsApps'], activationBinds: true });
+    const result = await launch({ kill_existing: false, _deps: deps });
+    assert.equal(result.msix_activation, true);
+    // activation needs a stopped app to apply the flag, but never at the cost of
+    // killing an instance the caller explicitly asked us to keep
+    assert.equal(state.killed, 0);
+  });
+
+  it('kill_existing:false is honoured on the local-copy path too', async () => {
+    const { deps, state } = msixDeps({ spawnFailures: ['WindowsApps'], cdpBindsFor: ['tradingview-mcp'] });
+    const result = await launch({ kill_existing: false, _deps: deps });
+    assert.equal(result.msix_local_copy, true);
+    assert.equal(state.killed, 0);
+  });
+
+  it('activation is attempted before falling back to a copy', async () => {
+    const { deps, state } = msixDeps({ spawnFailures: ['WindowsApps'], cdpBindsFor: ['tradingview-mcp'] });
+    const result = await launch({ _deps: deps });
+    assert.equal(state.activations, 1);
+    assert.equal(result.msix_local_copy, true);
+    assert.equal(result.msix_activation, undefined);
+  });
+
+  it('activation throwing still falls back to a local copy', async () => {
+    const { deps, state } = msixDeps({
+      spawnFailures: ['WindowsApps'], activationThrows: true, cdpBindsFor: ['tradingview-mcp'],
+    });
+    const result = await launch({ _deps: deps });
+    assert.equal(result.success, true);
+    assert.equal(state.activations, 1);
+    assert.equal(result.msix_activation, undefined);
+    assert.equal(result.msix_local_copy, true);
+    assert.equal(result.binary, LOCAL_COPY_EXE);
   });
 
   it('EACCES on direct spawn falls back to local copy', async () => {
@@ -146,5 +234,97 @@ describe('launch() — classic install path', { skip: !onWindows }, () => {
       delay: async () => {}, probeCdp: async () => null,
     };
     await assert.rejects(() => launch({ _deps: deps }), /TradingView not found/);
+  });
+});
+
+// Store packages are publisher-prefixed, so neither the Get-AppxPackage -Name
+// filter nor the stale-copy cleanup may assume a bare "TradingView." prefix.
+describe('launch() — publisher-prefixed MSIX package', { skip: !onWindows }, () => {
+  const PKG = '31178TradingViewInc.TradingView_3.3.0.0_x64__q4jpyh43s5mv6';
+  const PREFIXED_EXE = `C:\\Program Files\\WindowsApps\\${PKG}\\TradingView.exe`;
+
+  function prefixedDeps() {
+    const state = { spawned: [], copies: [], removed: [], queries: [], cdpUp: false };
+    const deps = {
+      existsSync: (p) => {
+        if (p === PREFIXED_EXE) return true;
+        if (p.includes('tradingview-mcp')) return state.copies.length > 0;
+        return false;
+      },
+      execSync: (cmd) => {
+        if (cmd.includes('Get-AppxPackage')) {
+          state.queries.push(cmd);
+          // Mimic PowerShell: a -Name filter that does not match returns nothing.
+          const m = cmd.match(/-Name '([^']+)'/);
+          const filter = m ? m[1] : '';
+          const re = new RegExp(`^${filter.replace(/\*/g, '.*')}$`, 'i');
+          return re.test('31178TradingViewInc.TradingView')
+            ? `C:\\Program Files\\WindowsApps\\${PKG}\n`
+            : '\n';
+        }
+        if (cmd.includes('taskkill')) return '';
+        throw new Error(`unexpected execSync: ${cmd}`);
+      },
+      spawn: (exe) => {
+        state.spawned.push(exe);
+        if (exe.includes('tradingview-mcp')) state.cdpUp = true;
+        return mockChild(exe.includes('WindowsApps') ? { failWith: 'EACCES' } : {});
+      },
+      cpSync: (src, dst) => { state.copies.push({ src, dst }); },
+      rmSync: (p) => { state.removed.push(p); },
+      readdirSync: () => ['31178TradingViewInc.TradingView_3.2.0.0_x64__q4jpyh43s5mv6'],
+      delay: async () => {},
+      probeCdp: async () => (state.cdpUp ? CDP_VERSION : null),
+    };
+    return { deps, state };
+  }
+
+  it('resolves the install via a wildcard -Name filter', async () => {
+    const { deps, state } = prefixedDeps();
+    const result = await launch({ _deps: deps });
+    assert.equal(result.success, true);
+    assert.match(state.queries[0], /-Name '\*TradingView\*'/);
+    assert.match(state.spawned[0], /WindowsApps/);
+  });
+
+  it('cleans up a stale copy of a publisher-prefixed package', async () => {
+    const { deps, state } = prefixedDeps();
+    await launch({ _deps: deps });
+    assert.equal(state.removed.length, 1);
+    assert.match(state.removed[0], /3\.2\.0\.0/);
+    assert.equal(state.copies.length, 1);
+  });
+
+  // Windows throws EPERM out of spawn() itself for WindowsApps binaries; the
+  // fallback must still run instead of the throw escaping launch().
+  it('synchronous EPERM on spawn still falls back to the local copy', async () => {
+    const { deps, state } = prefixedDeps();
+    deps.spawn = (exe) => {
+      state.spawned.push(exe);
+      if (exe.includes('WindowsApps')) {
+        const err = new Error('spawn EPERM');
+        err.code = 'EPERM';
+        throw err;
+      }
+      state.cdpUp = true;
+      return mockChild();
+    };
+    const result = await launch({ _deps: deps });
+    assert.equal(result.success, true);
+    assert.equal(result.msix_local_copy, true);
+    assert.match(state.spawned[0], /WindowsApps/);
+    assert.match(state.spawned[1], /tradingview-mcp/);
+  });
+
+  it('propagates a synchronous spawn failure on a classic install', async () => {
+    const classicExe = `${process.env.LOCALAPPDATA}\\TradingView\\TradingView.exe`;
+    const deps = {
+      existsSync: (p) => p === classicExe,
+      execSync: (cmd) => { if (cmd.includes('taskkill')) return ''; throw new Error(`unexpected: ${cmd}`); },
+      spawn: () => { const e = new Error('spawn EPERM'); e.code = 'EPERM'; throw e; },
+      cpSync: () => {}, rmSync: () => {}, readdirSync: () => [],
+      delay: async () => {}, probeCdp: async () => null,
+    };
+    await assert.rejects(() => launch({ _deps: deps }), /EPERM/);
   });
 });

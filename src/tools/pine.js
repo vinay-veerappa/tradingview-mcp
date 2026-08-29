@@ -3,8 +3,10 @@ import { jsonResult } from './_format.js';
 import * as core from '../core/pine.js';
 
 export function registerPineTools(server) {
-  server.tool('pine_get_source', 'Get current Pine Script source code from the editor', {}, async () => {
-    try { return jsonResult(await core.getSource()); }
+  server.tool('pine_get_source', 'Get current Pine Script source code from the editor. Can return 200KB+ on complex scripts — pass max_chars to cap the returned source (line_count/char_count still report the full size, and truncated:true flags a capped result).', {
+    max_chars: z.coerce.number().int().positive().optional().describe('Cap the returned source to this many characters (default: full source)'),
+  }, async ({ max_chars }) => {
+    try { return jsonResult(await core.getSource({ max_chars })); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
@@ -35,12 +37,14 @@ export function registerPineTools(server) {
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
-  server.tool('pine_smart_compile', 'Intelligent compile: detects button, compiles, checks errors, reports study changes', {}, async () => {
-    try { return jsonResult(await core.smartCompile()); }
+  server.tool('pine_smart_compile', 'Intelligent compile: detects button, compiles, checks errors, reports study changes. Does NOT save by default.', {
+    allow_save: z.boolean().optional().describe('Allow clicking Save if no non-destructive compile button is found. DANGEROUS: Save persists into the script slot the editor is bound to and will overwrite that saved script. Default false.'),
+  }, async ({ allow_save }) => {
+    try { return jsonResult(await core.smartCompile({ allowSave: allow_save === true })); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
-  server.tool('pine_new', 'Create a new blank Pine Script', {
+  server.tool('pine_new', 'Create a genuinely new, unsaved Pine Script via the editor menu. Throws rather than overwriting the currently open script.', {
     type: z.enum(['indicator', 'strategy', 'library']).describe('Type of script to create'),
   }, async ({ type }) => {
     try { return jsonResult(await core.newScript({ type })); }

@@ -33,7 +33,7 @@ export async function getState({ _deps } = {}) {
         studies: studies,
       };
     })()
-  `);
+  `, { retry: true });
   return { success: true, ...state };
 }
 
@@ -266,7 +266,7 @@ export async function symbolInfo({ _deps } = {}) {
         typespecs: info.typespecs, resolution: chart.resolution(), chart_type: chart.chartType()
       };
     })()
-  `);
+  `, { retry: true });
   return { success: true, ...result };
 }
 
