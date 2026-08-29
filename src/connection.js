@@ -243,10 +243,36 @@ export async function reconnectTo(targetId) {
   return connect(targetId);
 }
 
+const CHART_URL_RE = /^https?:\/\/([a-z0-9-]+\.)*tradingview\.com\/chart/i;
+const TV_WEB_URL_RE = /^https?:\/\/([a-z0-9-]+\.)*tradingview\.com\//i;
+
+/**
+ * Pick the CDP target to drive, from a /json/list response.
+ *
+ * Both patterns are anchored at the scheme and matched against the tradingview.com
+ * host — never "tradingview" appearing anywhere in the URL. The desktop app has its
+ * own internal pages served from file:// under the install directory, and on Windows
+ * that path literally contains "TradingView.Desktop", so a loose match selects the
+ * app's browser-api-container instead of a chart. getClient() then caches that target
+ * and its liveness check keeps passing, so every later call reports
+ * api_available:false until the process restarts.
+ *
+ * Exported for testing; callers should use findChartTarget().
+ */
+export function pickChartTarget(targets) {
+  const pages = (targets || []).filter(t => t?.type === 'page' && typeof t.url === 'string');
+  // A real chart page, then any tradingview.com web page (screener, watchlist, ...).
+  return pages.find(t => CHART_URL_RE.test(t.url))
+    || pages.find(t => TV_WEB_URL_RE.test(t.url))
+    || null;
+}
+
 async function findChartTarget() {
   const resp = await fetch(`http://${CDP_HOST}:${CDP_PORT}/json/list`);
   const targets = await resp.json();
-  const chartTargets = targets.filter(t => t.type === 'page' && /tradingview\.com\/chart/i.test(t.url));
+  // Prefer charts, using anchored regexes (pickChartTarget) so the app's own
+  // file:// "TradingView.Desktop" browser-api-container is never picked.
+  const chartTargets = targets.filter(t => t?.type === 'page' && typeof t.url === 'string' && CHART_URL_RE.test(t.url));
 
   if (chartTargets.length > 1) {
     try {
@@ -261,7 +287,7 @@ async function findChartTarget() {
   }
 
   return chartTargets[0]
-    || targets.find(t => t.type === 'page' && /tradingview/i.test(t.url))
+    || pickChartTarget(targets)   // anchored tradingview.com fallback (replaces loose /tradingview/i match)
     || null;
 }
 

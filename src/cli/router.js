@@ -3,26 +3,6 @@
  * Zero dependencies — uses only Node.js built-ins.
  */
 import { parseArgs } from 'node:util';
-import { disconnect } from '../connection.js';
-
-/**
- * End the process with `code` without calling process.exit().
- *
- * On Windows, process.exit() while undici (global fetch) is still tearing down
- * its sockets trips a libuv assertion — `!(handle->flags & UV_HANDLE_CLOSING)`
- * in src/win/async.c — and the process dies with 0xC0000409 instead of `code`.
- * Setting exitCode and letting the loop drain also guarantees piped stdout is
- * flushed, which process.exit() does not.
- *
- * The CDP WebSocket is the one handle that would otherwise keep the loop alive
- * forever, so close it here. The unref'd timer is a backstop for any handle we
- * failed to release; it never delays a process that drains on its own.
- */
-function finish(code) {
-  process.exitCode = code;
-  disconnect().catch(() => { /* nothing open, or already gone */ });
-  setTimeout(() => process.exit(code), 2000).unref();
-}
 
 /** @type {Map<string, { description: string, options?: object, handler: Function, subcommands?: Map<string, object> }>} */
 const commands = new Map();
@@ -75,7 +55,7 @@ export async function run(argv) {
 
   if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
     printHelp();
-    return finish(0);
+    process.exit(0);
   }
 
   const cmdName = args[0];
@@ -84,7 +64,7 @@ export async function run(argv) {
   if (!cmd) {
     console.error(`Unknown command: ${cmdName}`);
     console.error('Run "tv --help" for a list of commands.');
-    return finish(1);
+    process.exit(1);
   }
 
   // Handle subcommands (e.g., tv pine get)
@@ -93,13 +73,13 @@ export async function run(argv) {
     const subName = args[1];
     if (!subName || subName === '--help' || subName === '-h') {
       printCommandHelp(cmdName, cmd);
-      return finish(0);
+      process.exit(0);
     }
     const sub = cmd.subcommands.get(subName);
     if (!sub) {
       console.error(`Unknown subcommand: ${cmdName} ${subName}`);
       printCommandHelp(cmdName, cmd);
-      return finish(1);
+      process.exit(1);
     }
     handler = sub.handler;
     options = sub.options || {};
@@ -121,11 +101,11 @@ export async function run(argv) {
             console.log(`  ${flag.padEnd(20)}${v.description || ''}`);
           }
         }
-        return finish(0);
+        process.exit(0);
       }
       await execute(handler, values, positionals);
     } catch (err) {
-      handleError(err);
+      await handleError(err);
     }
   } else {
     handler = cmd.handler;
@@ -139,32 +119,49 @@ export async function run(argv) {
       });
       if (values.help) {
         printCommandHelp(cmdName, cmd);
-        return finish(0);
+        process.exit(0);
       }
       await execute(handler, values, positionals);
     } catch (err) {
-      handleError(err);
+      await handleError(err);
     }
   }
+}
+
+/**
+ * Close the CDP connection, then let the event loop drain on its own.
+ *
+ * Calling process.exit() with a live CDP WebSocket tears libuv down mid-flight.
+ * Node 24 on Windows turns that into a hard
+ * "Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), src\win\async.c"
+ * crash *after* the command has already printed its result — the work succeeds
+ * but the process dies with 0xC0000409, so callers see a failure.
+ *
+ * The timer is a safety net for a handle that never releases; unref'd so it
+ * cannot itself keep the process alive.
+ */
+async function shutdown(code) {
+  try {
+    const { disconnect } = await import('../connection.js');
+    await disconnect();
+  } catch { /* connection.js never loaded, or nothing open */ }
+  process.exitCode = code;
+  setTimeout(() => process.exit(code), 2000).unref();
 }
 
 async function execute(handler, values, positionals) {
   try {
     const result = await handler(values, positionals);
     console.log(JSON.stringify(result, null, 2));
-    return finish(0);
+    await shutdown(0);
   } catch (err) {
-    handleError(err);
+    await handleError(err);
   }
 }
 
-function handleError(err) {
+async function handleError(err) {
   const message = err.message || String(err);
-  // Connection failures get exit code 2
-  if (/CDP|connection|ECONNREFUSED|not running/i.test(message)) {
-    console.error(JSON.stringify({ success: false, error: message }, null, 2));
-    return finish(2);
-  }
   console.error(JSON.stringify({ success: false, error: message }, null, 2));
-  return finish(1);
+  // Connection failures get exit code 2
+  await shutdown(/CDP|connection|ECONNREFUSED|not running/i.test(message) ? 2 : 1);
 }
