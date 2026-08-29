@@ -78,7 +78,7 @@ describe('arbitrary page JavaScript capability', () => {
     assert.match(tool.description, /DANGEROUS.*Disabled by default/);
     assert.equal(response.isError, true);
     assert.equal(body.success, false);
-    assert.match(body.error, new RegExp(ARBITRARY_PAGE_JS_ENV));
+    assert.match(body.error.message, new RegExp(ARBITRARY_PAGE_JS_ENV));
   });
 
   it('preserves MCP tool behavior after deliberate opt-in', async () => {

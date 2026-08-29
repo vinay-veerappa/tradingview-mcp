@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { jsonResult } from './_format.js';
+import { jsonResult, errorResult } from './_format.js';
 import * as core from '../core/capture.js';
 
 export function registerCaptureTools(server) {
@@ -10,6 +10,6 @@ export function registerCaptureTools(server) {
     wait_for_render: z.boolean().optional().describe('Wait for the chart canvas to stabilize before capturing. Use after chart_set_symbol or chart_set_timeframe to avoid stale frames.'),
   }, async ({ region, filename, method, wait_for_render }) => {
     try { return jsonResult(await core.captureScreenshot({ region, filename, method, waitForRender: wait_for_render })); }
-    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+    catch (err) { return errorResult(err); }
   });
 }

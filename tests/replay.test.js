@@ -418,8 +418,8 @@ describe('trade()', () => {
       const body = JSON.parse(response.content[0].text);
 
       assert.equal(response.isError, true);
-      assert.match(body.error, new RegExp(REPLAY_TRADING_ENV));
-      assert.doesNotMatch(body.error, /Invalid action/);
+      assert.match(body.error.message, new RegExp(REPLAY_TRADING_ENV));
+      assert.doesNotMatch(body.error.message, /Invalid action/);
     }
   });
 
@@ -429,8 +429,8 @@ describe('trade()', () => {
       const body = JSON.parse(response.content[0].text);
 
       assert.equal(response.isError, true);
-      assert.match(body.error, /Invalid action/);
-      assert.doesNotMatch(body.error, /disabled/);
+      assert.match(body.error.message, /Invalid action/);
+      assert.doesNotMatch(body.error.message, /disabled/);
     }
   });
 });

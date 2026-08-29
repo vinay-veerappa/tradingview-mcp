@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { jsonResult } from './_format.js';
+import { jsonResult, errorResult } from './_format.js';
 import * as core from '../core/batch.js';
 
 export function registerBatchTools(server) {
@@ -11,6 +11,6 @@ export function registerBatchTools(server) {
     ohlcv_count: z.coerce.number().optional().describe('Bar count for get_ohlcv action (default 100)'),
   }, async ({ symbols, timeframes, action, delay_ms, ohlcv_count }) => {
     try { return jsonResult(await core.batchRun({ symbols, timeframes, action, delay_ms, ohlcv_count })); }
-    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+    catch (err) { return errorResult(err); }
   });
 }
