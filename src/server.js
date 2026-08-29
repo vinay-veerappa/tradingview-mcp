@@ -82,22 +82,15 @@ CONTEXT MANAGEMENT:
 );
 
 // Register all tool groups
-registerHealthTools(server);
-registerSnapshotTools(server);
-registerChartTools(server);
-registerPineTools(server);
-registerDataTools(server);
-registerCaptureTools(server);
-registerDrawingTools(server);
-registerAlertTools(server);
-registerBatchTools(server);
-registerReplayTools(server);
-registerIndicatorTools(server);
-registerWatchlistTools(server);
-registerUiTools(server);
-registerPaneTools(server);
-registerTabTools(server);
-registerPaperTools(server);
+import { registerAll } from './tools/index.js';
+import { registerSystemTools, applyProfile, getActiveProfile } from './tools/_profiles.js';
+registerSystemTools(server); // always visible (system_status, profile_set)
+registerAll(server);
+
+// Profile gating (P2-19): TRADINGVIEW_MCP_PROFILE env or 'base' default.
+// Disabled tools vanish from tools/list and reject pre-handler (SDK-verified).
+const _profileResult = applyProfile(server, getActiveProfile());
+process.stderr.write(`   Profile: ${_profileResult.profile} (${_profileResult.enabled} tools visible, ${_profileResult.disabled} gated)\n`);
 
 // Startup notice (stderr so it doesn't interfere with MCP stdio protocol)
 process.stderr.write('⚠  tradingview-mcp  |  Unofficial tool. Not affiliated with TradingView Inc. or Anthropic.\n');

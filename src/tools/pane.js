@@ -5,7 +5,6 @@ import * as core from '../core/pane.js';
 
 export function registerPaneTools(server) {
   server.tool('pane_list', 'List all chart panes in the current layout with their symbols and active state', {},
-    A.READ,
     A.READ, async () => {
     try { return jsonResult(await core.list()); }
     catch (err) { return errorResult(err); }
@@ -14,7 +13,6 @@ export function registerPaneTools(server) {
   server.tool('pane_set_layout', 'Change the chart grid layout (e.g., single, 2x2, 2h, 3v)', {
     layout: z.string().describe('Layout code: s (single), 2h, 2v, 2-1, 1-2, 3h, 3v, 4 (2x2), 6, 8. Also accepts: single, 2x1, 1x2, 2x2, quad'),
   },
-    A.MUTATE_IDEMPOTENT,
     A.MUTATE_IDEMPOTENT, async ({ layout }) => {
     try { return jsonResult(await core.setLayout({ layout })); }
     catch (err) { return errorResult(err); }
@@ -23,7 +21,6 @@ export function registerPaneTools(server) {
   server.tool('pane_focus', 'Focus a specific chart pane by index (0-based)', {
     index: z.coerce.number().describe('Pane index (0-based, from pane_list)'),
   },
-    A.MUTATE_IDEMPOTENT,
     A.MUTATE_IDEMPOTENT, async ({ index }) => {
     try { return jsonResult(await core.focus({ index })); }
     catch (err) { return errorResult(err); }
@@ -33,7 +30,6 @@ export function registerPaneTools(server) {
     index: z.coerce.number().describe('Pane index (0-based)'),
     symbol: z.string().describe('Symbol to set (e.g., NQ1!, ES1!, AAPL)'),
   },
-    A.MUTATE_ORDER,
     A.MUTATE_ORDER, async ({ index, symbol }) => {
     try { return jsonResult(await core.setSymbol({ index, symbol })); }
     catch (err) { return errorResult(err); }

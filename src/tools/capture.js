@@ -10,7 +10,6 @@ export function registerCaptureTools(server) {
     method: z.string().optional().describe('Capture method: cdp (Page.captureScreenshot) or api (chartWidgetCollection.takeScreenshot) (default cdp)'),
     wait_for_render: z.boolean().optional().describe('Wait for the chart canvas to stabilize before capturing. Use after chart_set_symbol or chart_set_timeframe to avoid stale frames.'),
   },
-    A.READ,
     A.READ, async ({ region, filename, method, wait_for_render }) => {
     try { return jsonResult(await core.captureScreenshot({ region, filename, method, waitForRender: wait_for_render })); }
     catch (err) { return errorResult(err); }

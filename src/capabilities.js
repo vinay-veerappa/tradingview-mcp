@@ -28,3 +28,33 @@ export function requireSelfUpdate(env = process.env) {
     );
   }
 }
+
+/**
+ * Capability inventory for system_status (P2-14). Never exposes ack values —
+ * only ids, human labels, what each unlock requires, and current state.
+ */
+export function listCapabilities(env = process.env) {
+  return [
+    {
+      id: 'arbitrary_page_js',
+      label: 'Arbitrary page JavaScript (ui_evaluate)',
+      env_var: ARBITRARY_PAGE_JS_ENV,
+      enabled: env[ARBITRARY_PAGE_JS_ENV] === ARBITRARY_PAGE_JS_ACK,
+      required_for: ['ui_evaluate'],
+    },
+    {
+      id: 'replay_trades',
+      label: 'Simulated Replay trades (replay_trade)',
+      env_var: REPLAY_TRADING_ENV,
+      enabled: env[REPLAY_TRADING_ENV] === REPLAY_TRADING_ACK,
+      required_for: ['replay_trade'],
+    },
+    {
+      id: 'self_update',
+      label: 'Self-update (tv_update: git pull + npm ci)',
+      env_var: SELF_UPDATE_ENV,
+      enabled: env[SELF_UPDATE_ENV] === SELF_UPDATE_ACK,
+      required_for: ['tv_update'],
+    },
+  ];
+}

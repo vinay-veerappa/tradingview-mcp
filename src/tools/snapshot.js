@@ -13,19 +13,19 @@ export function registerSnapshotTools(server) {
     study_filter: z.string().optional().describe('Substring to filter Pine sections to one indicator (e.g., "Profiler")'),
     compact: z.boolean().optional().describe('Return per-section hashes instead of full payloads'),
   },
-    A.READ,
     A.READ, async (args) => {
     try { return jsonResult(await sessionSnapshot(args)); }
     catch (err) { return errorResult(err); }
   });
 
   server.tool('chart_changes', 'Diff the live chart against a prior session_snapshot without re-reading everything: pass since = prior snapshot_hash → returns changed/unchanged section lists plus a new snapshot hash.', {
-    since: z.record(z.string()).describe('section_hashes map from a prior session_snapshot (or the prior snapshot object)'),
+    // z.object().passthrough(), NOT z.record(): SDK zod-compat cannot convert
+    // record shapes (verified: tools/list throws "_zod of undefined").
+    since: z.object({}).passthrough().describe('section_hashes map from a prior session_snapshot (or the prior snapshot object itself)'),
     include: z.array(z.string()).optional().describe('Restrict both collection and diff to these sections'),
     preset: z.string().optional().describe('Section preset (brief|analysis|strategy|pine_debug)'),
     study_filter: z.string().optional().describe('Filter Pine sections to one indicator'),
   },
-    A.READ,
     A.READ, async ({ since, include, exclude, preset, study_filter }) => {
     try { return jsonResult(await chartChanges({ since, include, exclude, preset, study_filter })); }
     catch (err) { return errorResult(err); }

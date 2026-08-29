@@ -39,14 +39,12 @@ export function registerDrawingTools(server) {
     overrides: z.string().optional().describe('JSON string of style overrides (e.g., \'{"linecolor": "#ff0000", "linewidth": 2}\')'),
     text: z.string().optional().describe('Text content for text shapes'),
   },
-    A.MUTATE_IDEMPOTENT,
     A.MUTATE_IDEMPOTENT, async ({ shape, point, point2, overrides, text }) => {
     try { return jsonResult(await core.drawShape({ shape, point, point2, overrides, text })); }
     catch (err) { return errorResult(err); }
   });
 
   server.tool('draw_list', 'List all shapes/drawings on the chart', {},
-    A.READ,
     A.READ, async () => {
     try { return jsonResult(await core.listDrawings()); }
     catch (err) { return errorResult(err); }
@@ -56,7 +54,6 @@ export function registerDrawingTools(server) {
     ...preconditionShape,
     confirm: z.boolean().optional().describe('Must be true — double-tap for a destructive, chart-wide action'),
   },
-    A.DESTRUCTIVE,
     A.DESTRUCTIVE, async ({ expected_symbol, expected_timeframe, confirm }) => {
     try {
       if (DRAW_CLEAR_REQUIRE_PRECONDITIONS && (!expected_symbol || confirm !== true)) {
@@ -79,7 +76,6 @@ export function registerDrawingTools(server) {
   server.tool('draw_remove_one', 'Remove a specific drawing by entity ID', {
     entity_id: z.string().describe('Entity ID of the drawing to remove (from draw_list)'),
   },
-    A.DESTRUCTIVE,
     A.DESTRUCTIVE, async ({ entity_id }) => {
     try { return jsonResult(await core.removeOne({ entity_id })); }
     catch (err) { return errorResult(err); }
@@ -88,7 +84,6 @@ export function registerDrawingTools(server) {
   server.tool('draw_get_properties', 'Get properties and points of a specific drawing', {
     entity_id: z.string().describe('Entity ID of the drawing (from draw_list)'),
   },
-    A.READ,
     A.READ, async ({ entity_id }) => {
     try { return jsonResult(await core.getProperties({ entity_id })); }
     catch (err) { return errorResult(err); }
