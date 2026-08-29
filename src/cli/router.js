@@ -3,17 +3,13 @@
  * Zero dependencies — uses only Node.js built-ins.
  */
 import { parseArgs } from 'node:util';
+import { disconnect } from '../connection.js';
 
 /** @type {Map<string, { description: string, options?: object, handler: Function, subcommands?: Map<string, object> }>} */
 const commands = new Map();
 
 export function register(name, config) {
   commands.set(name, config);
-}
-
-export function getRegisteredHandler(name, subcommand) {
-  const command = commands.get(name);
-  return subcommand ? command?.subcommands?.get(subcommand)?.handler : command?.handler;
 }
 
 function printHelp() {
@@ -110,7 +106,7 @@ export async function run(argv) {
       }
       await execute(handler, values, positionals);
     } catch (err) {
-      await handleError(err);
+      handleError(err);
     }
   } else {
     handler = cmd.handler;
@@ -128,45 +124,48 @@ export async function run(argv) {
       }
       await execute(handler, values, positionals);
     } catch (err) {
-      await handleError(err);
+      handleError(err);
     }
   }
 }
 
-/**
- * Close the CDP connection, then let the event loop drain on its own.
- *
- * Calling process.exit() with a live CDP WebSocket tears libuv down mid-flight.
- * Node 24 on Windows turns that into a hard
- * "Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), src\win\async.c"
- * crash *after* the command has already printed its result — the work succeeds
- * but the process dies with 0xC0000409, so callers see a failure.
- *
- * The timer is a safety net for a handle that never releases; unref'd so it
- * cannot itself keep the process alive.
- */
-async function shutdown(code) {
-  try {
-    const { disconnect } = await import('../connection.js');
-    await disconnect();
-  } catch { /* connection.js never loaded, or nothing open */ }
-  process.exitCode = code;
-  setTimeout(() => process.exit(code), 2000).unref();
-}
+export async function execute(handler, values, positionals, {
+  disconnect: disconnectFn = disconnect,
+  log = console.log,
+} = {}) {
+  let result;
+  let handlerError;
+  let succeeded = false;
 
-async function execute(handler, values, positionals) {
   try {
-    const result = await handler(values, positionals);
-    console.log(JSON.stringify(result, null, 2));
-    await shutdown(0);
+    result = await handler(values, positionals);
+    succeeded = true;
   } catch (err) {
-    await handleError(err);
+    handlerError = err;
+  } finally {
+    try {
+      await disconnectFn();
+    } catch {
+      // Best-effort cleanup must not replace the handler result or error.
+    }
   }
+
+  if (!succeeded) return handleError(handlerError, false);
+
+  log(JSON.stringify(result, null, 2));
+  process.exitCode = result?.success === false ? 1 : 0;
 }
 
-async function handleError(err) {
+function handleError(err, exitImmediately = true) {
   const message = err.message || String(err);
-  console.error(JSON.stringify({ success: false, error: message }, null, 2));
   // Connection failures get exit code 2
-  await shutdown(/CDP|connection|ECONNREFUSED|not running/i.test(message) ? 2 : 1);
+  if (/CDP|connection|ECONNREFUSED|not running/i.test(message)) {
+    console.error(JSON.stringify({ success: false, error: message }, null, 2));
+    if (exitImmediately) process.exit(2);
+    process.exitCode = 2;
+    return;
+  }
+  console.error(JSON.stringify({ success: false, error: message }, null, 2));
+  if (exitImmediately) process.exit(1);
+  process.exitCode = 1;
 }

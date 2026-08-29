@@ -99,7 +99,7 @@ export async function healthCheck() {
       }
       return result;
     })()
-  `);
+  `, { retry: true });
 
   const update = await checkForUpdate();
 
@@ -155,7 +155,7 @@ export async function discover() {
       } catch(e) { results.alertService = { available: false, error: e.message }; }
       return results;
     })()
-  `);
+  `, { retry: true });
 
   const available = Object.values(paths).filter(v => v.available).length;
   const total = Object.keys(paths).length;
@@ -229,7 +229,7 @@ export async function uiState() {
       } catch(e) { ui.replay = { error: e.message }; }
       return ui;
     })()
-  `);
+  `, { retry: true });
 
   return { success: true, ...state };
 }
