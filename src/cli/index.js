@@ -25,6 +25,7 @@ import './commands/ui.js';
 import './commands/pane.js';
 import './commands/tab.js';
 import './commands/stream.js';
+import './commands/gateway.js';
 import './commands/paper.js';
 
 // Run
