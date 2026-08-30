@@ -13,8 +13,10 @@ export function registerSnapshotTools(server) {
     study_filter: z.string().optional().describe('Substring to filter Pine sections to one indicator (e.g., "Profiler")'),
     compact: z.boolean().optional().describe('Return per-section hashes instead of full payloads'),
   },
-    A.READ, async (args) => {
-    try { return jsonResult(await sessionSnapshot(args)); }
+    A.READ, async (args, extra) => {
+    // P2-18: MCP request cancellation — extra.signal (SDK RequestHandlerExtra)
+    // flows into withChartContext; a cancelled call unwinds any chart flip.
+    try { return jsonResult(await sessionSnapshot(args, { signal: extra?.signal })); }
     catch (err) { return errorResult(err); }
   });
 

@@ -224,7 +224,7 @@ export async function sessionSnapshot(opts = {}, _deps = null) {
   const runUnder = (op) => _ctx.withChartContext(
     { symbol: symbol ?? null, timeframe: timeframe ?? null },
     op,
-    { label: 'session_snapshot' },
+    { label: 'session_snapshot', signal: _deps?.signal },
   );
 
   let outcome = await runUnder(collectOnce);

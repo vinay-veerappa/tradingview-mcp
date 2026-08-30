@@ -120,6 +120,33 @@ describe('withChartContext: transactional behavior', () => {
     // caller error is the op error, not a restore artifact
   });
 
+  test('P2-18: abort mid-op rejects the caller and still restores', async () => {
+    const d = mockDeps({ symbol: 'CME_MINI:NQ1!', timeframe: '5' });
+    const ctx = createChartContext(d);
+    const ctl = new AbortController();
+    let opSettled = false;
+    const p = ctx.withChartContext({ symbol: 'NASDAQ:AAPL' }, async () => {
+      await new Promise((r) => setTimeout(r, 50));
+      opSettled = true;
+      return { v: 1 };
+    }, { label: 'cxl', signal: ctl.signal });
+    setTimeout(() => ctl.abort(), 10);
+    await assert.rejects(() => p, /aborted by caller/);
+    assert.equal(d.state.symbol, 'CME_MINI:NQ1!', 'chart restored despite abort');
+  });
+
+  test('P2-18: pre-aborted signal throws before touching the chart', async () => {
+    const d = mockDeps();
+    const ctx = createChartContext(d);
+    const ctl = new AbortController();
+    ctl.abort();
+    await assert.rejects(
+      () => ctx.withChartContext({ symbol: 'NASDAQ:AAPL' }, async () => ({ v: 1 }), { signal: ctl.signal }),
+      /aborted by caller/
+    );
+    assert.equal(d.log.filter((l) => l.startsWith('write')).length, 0, 'no chart writes at all');
+  });
+
   test('serialization: overlapping contexts run strictly one after another', async () => {
     const d = mockDeps();
     const ctx = createChartContext(d);

@@ -84,8 +84,17 @@ export function createChartContext({ evaluate, evaluateAsync, waitForChartReady 
    * - restore failures never mask the op result (reported as restore_error),
    *   and never mask the op error (swallowed on the failure path).
    */
-  async function withChartContext(requested, op, { label = 'unnamed' } = {}) {
+  async function withChartContext(requested, op, { label = 'unnamed', signal } = {}) {
     return new Promise((resolve) => {
+      // P2-18 slice: caller cancellation. The op races against the signal;
+      // abort rejects the CALLER while the restore path still runs (the flip
+      // may already have happened), so the chart is never left mutated by a
+      // cancelled call. Nothing can kill a page-side evaluate mid-flight —
+      // the op body may finish in the background — so this is caller-visible
+      // cancellation, not op termination.
+      const abortError = new Error(`withChartContext(${label}): aborted by caller`);
+      abortError.name = 'AbortError';
+
       // Closure state shared by the op body and both restore paths:
       const txn = { prior: null, appliedSymbol: null, appliedTf: null };
 
@@ -100,6 +109,7 @@ export function createChartContext({ evaluate, evaluateAsync, waitForChartReady 
       const run = _lock.then(async () => {
         _owner = label;
         try {
+          if (signal?.aborted) throw abortError;
           txn.prior = await readIdentity();
           const requestedIdentity = {
             symbol: requested?.symbol ?? null,
@@ -122,7 +132,20 @@ export function createChartContext({ evaluate, evaluateAsync, waitForChartReady 
             await applyIdentity({ symbol: requestedIdentity.symbol, timeframe: null });
           }
 
-          const result = await op({ prior: txn.prior, applied: flipped });
+          // P2-18: race the op against caller abort. The op body may still
+          // complete in the background (nothing can kill a running evaluate),
+          // but the CALLER sees the rejection and restore runs immediately.
+          const opP = Promise.resolve(op({ prior: txn.prior, applied: flipped }));
+          let result;
+          if (signal) {
+            const abortP = new Promise((_, rej) => {
+              if (signal.aborted) { rej(abortError); return; }
+              signal.addEventListener('abort', () => rej(abortError), { once: true });
+            });
+            result = await Promise.race([opP, abortP]);
+          } else {
+            result = await opP;
+          }
 
           // Post-op identity: detect whether anything else moved the chart
           // while we held it (agent UI interaction, a second TV window, etc.)
