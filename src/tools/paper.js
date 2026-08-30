@@ -26,6 +26,13 @@ export function registerPaperTools(server) {
     A.MUTATE_IDEMPOTENT, async () => {
       try { return jsonResult(await core.connect()); }
       catch (err) { return errorResult(err); }
+    }, {
+      meta: { mutation_adr: '0001-mutation-routes' },
+      http: {
+        method: 'POST',
+        path: '/paper/connect',
+        adapter: (_url, _deps) => core.connect({ _deps }),
+      },
     });
   toolFromRegistry(server, 'paper_connect');
 
@@ -85,6 +92,31 @@ export function registerPaperTools(server) {
     A.MUTATE_ORDER, async (args) => {
       try { return jsonResult(await core.placeOrder(args)); }
       catch (err) { return errorResult(err); }
+    }, {
+      meta: { mutation_adr: '0001-mutation-routes' },
+      http: {
+        method: 'POST',
+        path: '/paper/orders',
+        // ADR 0001 §1: order placement over HTTP REQUIRES the idempotency key
+        // (no opt-out, unlike MCP). Enforced here, before core sees the args.
+        adapter: (url, _deps, body = {}) => {
+          if (!body.client_order_id) {
+            throw Object.assign(
+              new Error('client_order_id is REQUIRED to place orders over HTTP (ADR 0001 §1: retries must be safe); supply a stable id and reuse it on retry'),
+              { reason: 'http_bad_request', retryable: false },
+            );
+          }
+          return core.placeOrder({
+            side: body.side, type: body.type, qty: body.qty, symbol: body.symbol,
+            price: body.price, stop_price: body.stop_price,
+            take_profit: body.take_profit, stop_loss: body.stop_loss,
+            tif: body.tif, duration_datetime: body.duration_datetime,
+            client_order_id: body.client_order_id,
+            preview: body.preview === true || url.searchParams.get('preview') === 'true',
+            _deps: body._deps,
+          });
+        },
+      },
     });
   toolFromRegistry(server, 'paper_place_order');
 
@@ -94,6 +126,13 @@ export function registerPaperTools(server) {
     A.MUTATE_IDEMPOTENT, async ({ order_id }) => {
       try { return jsonResult(await core.cancelOrder({ order_id })); }
       catch (err) { return errorResult(err); }
+    }, {
+      meta: { mutation_adr: '0001-mutation-routes' },
+      http: {
+        method: 'POST',
+        path: '/paper/orders/cancel',
+        adapter: (_url, _deps, body) => core.cancelOrder({ order_id: body?.order_id, _deps: body?._deps ?? undefined }),
+      },
     });
   toolFromRegistry(server, 'paper_cancel_order');
 
@@ -106,6 +145,19 @@ export function registerPaperTools(server) {
     A.MUTATE_ORDER, async (args) => {
       try { return jsonResult(await core.modifyOrder(args)); }
       catch (err) { return errorResult(err); }
+    }, {
+      meta: { mutation_adr: '0001-mutation-routes' },
+      http: {
+        method: 'PATCH',
+        path: '/paper/orders/modify',
+        adapter: (_url, _deps, body) => core.modifyOrder({
+          order_id: body?.order_id,
+          qty: body?.qty,
+          price: body?.price,
+          stop_price: body?.stop_price,
+          _deps: body?._deps,
+        }),
+      },
     });
   toolFromRegistry(server, 'paper_modify_order');
 
@@ -117,6 +169,18 @@ export function registerPaperTools(server) {
     A.MUTATE_ORDER, async (args) => {
       try { return jsonResult(await core.closePosition(args)); }
       catch (err) { return errorResult(err); }
+    }, {
+      meta: { mutation_adr: '0001-mutation-routes' },
+      http: {
+        method: 'POST',
+        path: '/paper/positions/close',
+        adapter: (_url, _deps, body) => core.closePosition({
+          position_id: body?.position_id,
+          symbol: body?.symbol,
+          qty: body?.qty,
+          _deps: body?._deps,
+        }),
+      },
     });
   toolFromRegistry(server, 'paper_close_position');
 
@@ -130,6 +194,20 @@ export function registerPaperTools(server) {
     A.MUTATE_ORDER, async (args) => {
       try { return jsonResult(await core.setBrackets(args)); }
       catch (err) { return errorResult(err); }
+    }, {
+      meta: { mutation_adr: '0001-mutation-routes' },
+      http: {
+        method: 'PATCH',
+        path: '/paper/brackets',
+        adapter: (_url, _deps, body) => core.setBrackets({
+          position_id: body?.position_id,
+          symbol: body?.symbol,
+          stop_loss: body?.stop_loss,
+          take_profit: body?.take_profit,
+          clear: body?.clear,
+          _deps: body?._deps,
+        }),
+      },
     });
   toolFromRegistry(server, 'paper_set_brackets');
 }

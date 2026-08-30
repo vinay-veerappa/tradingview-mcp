@@ -1,6 +1,6 @@
 # ADR 0001 — Mutation routes over HTTP (lifting the gateway's structural read-only gate)
 
-**Status:** Proposed
+**Status:** Accepted (2026-08-29; implemented in the same commit — see "Implementation status" below)
 **Date:** 2026-08-29
 **Supersedes:** none
 **Related:** `docs/MCP_SURFACE_AND_GATEWAY_PLAN.md` §4.3 (out of scope), P2-4 (error contract),
@@ -108,3 +108,31 @@ calls already emit. No new log destination.
    is a pure function tested directly.
 3. `tests/order_idem.test.js` extended: HTTP-shaped duplicate `client_order_id` replay
    returns `deduplicated: true`.
+
+## Implementation status (2026-08-29 — ACCEPTED AND LANDED)
+
+All three verification hooks pass; the rollout order was completed in one commit:
+
+- **Registry gate** (`src/tools/_registry.js`): `op()` requires
+  `extra.meta.mutation_adr === '0001-mutation-routes'` for any non-GET or non-read
+  http binding; refusal messages name the ADR. Allowed methods: POST/PATCH/DELETE
+  (PUT etc. refused outright). `destructive`/`open-world` stay MCP-only even WITH
+  the meta key. `httpRoutes()` now reports `access` per route.
+- **Server gate** (`src/gateway/http.js`): `TV_GATEWAY_MUTATIONS` must be exactly
+  `'on'` (`mutationsAuthorized()` — pure, exported, tested); non-loopback peers get
+  403 `http_forbidden` even with the flag on; loopback without the flag gets 404
+  `http_mutations_disabled` (routes never "exist" for the client). `handleRequest`
+  gained JSON-body parsing (1 MB cap) for mutation adapters — adapters receive
+  `(url, _deps, body, req)`. Wrong-method requests get 405 with `Allow`.
+- **Paper bindings** (`src/tools/paper.js`), all citing the ADR meta:
+  `POST /paper/connect` (mutate), `POST /paper/orders` (order — adapter REQUIRES
+  `client_order_id`, no HTTP opt-out, refused before core is reached),
+  `POST /paper/orders/cancel` (mutate), `PATCH /paper/orders/modify` (order),
+  `POST /paper/positions/close` (order), `PATCH /paper/brackets` (order).
+- **Tests**: 14 registry contract tests (meta-gate accept/refuse matrix, method
+  allowlist, class restrictions), gateway gate-posture tests (404 default / POST
+  flows with gate on / exact-match flag semantics / JSON 400s / Allow-header 405s),
+  and the HTTP idempotency replay test (`deduplicated: true`, single placement).
+
+Defaults did not change: `TV_GATEWAY_MUTATIONS` unset or any value but `on` → the
+gateway is byte-for-byte as read-only as it was before this ADR.

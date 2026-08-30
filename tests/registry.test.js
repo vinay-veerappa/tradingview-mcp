@@ -83,36 +83,93 @@ describe('canonical operation registry (P2-19)', () => {
 });
 
 describe('derived HTTP route table (gateway generation)', () => {
-  test('only read-access ops are bound — non-read ops can never reach HTTP', () => {
+  test('every bound op cites its authorization: read-GET needs none, mutations must cite ADR 0001', () => {
     for (const r of httpRoutes()) {
       const e = getOp(r.op);
       assert.ok(e, `route references unknown op '${r.op}'`);
-      assert.equal(e.access, 'read', r.path);
+      if (r.method === 'GET') {
+        assert.equal(e.access, 'read', r.path);
+        assert.equal(e.meta?.mutation_adr, undefined, `${r.path}: read routes carry no ADR meta`);
+      } else {
+        // ADR 0001: mutation binding ⇔ meta.mutation_adr cited + allowed method + allowed class.
+        assert.equal(e.meta?.mutation_adr, '0001-mutation-routes', r.path);
+        assert.ok(['POST', 'PATCH', 'DELETE'].includes(r.method), r.path);
+        assert.ok(['mutate', 'order'].includes(e.access), `${r.path}: access '${e.access}' not HTTP-bindable`);
+        assert.ok(e.annotations.readOnlyHint === false, r.path);
+      }
     }
   });
 
-  test('no non-GET method can be declared without an ADR: op() refuses http on non-read', () => {
-    // Runs against a THROWING probe only — no reset here: _resetForTest()
-    // would wipe the production table for the live httpRoutes() tests below.
-    assert.throws(
-      () => op('http_mutate_probe', 'probe', {}, A.MUTATE_IDEMPOTENT, async () => ({}),
-        { http: { path: '/will-not-bind' } }),
-      /read-only/,
-    );
+  test('op() refuses a mutation http binding WITHOUT the ADR meta key', () => {
+    _resetForTest();
+    try {
+      assert.throws(
+        () => op('mut_probe', 'probe', {}, A.MUTATE_IDEMPOTENT, async () => ({}),
+          { http: { method: 'POST', path: '/will-not-bind', adapter: () => ({}) } }),
+        /mutation_adr|read-only/,
+        'non-read op without meta.mutation_adr must be refused',
+      );
+      assert.throws(
+        () => op('mut_get_probe', 'probe', {}, A.MUTATE_IDEMPOTENT, async () => ({}),
+          { meta: { mutation_adr: '0001-mutation-routes' }, http: { path: '/will-not-bind', adapter: () => ({}) } }),
+        /access 'read'/,
+        'mutation ops cannot bind GET — even with the ADR meta, GET stays read-only access',
+      );
+    } finally {
+      _resetForTest();
+      registerAll(new McpServer({ name: 'restore', version: '0' }));
+    }
+  });
+
+  test('op() refuses destructive/open-world transports even WITH the ADR meta', () => {
+    _resetForTest();
+    try {
+      assert.throws(
+        () => op('destructive_probe', 'probe', {}, A.DESTRUCTIVE, async () => ({}),
+          { meta: { mutation_adr: '0001-mutation-routes' }, http: { method: 'POST', path: '/nope', adapter: () => ({}) } }),
+        /MCP-only|destructive/,
+      );
+      assert.throws(
+        () => op('openworld_probe', 'probe', {}, A.OPEN_WORLD, async () => ({}),
+          { meta: { mutation_adr: '0001-mutation-routes' }, http: { method: 'POST', path: '/nope', adapter: () => ({}) } }),
+        /MCP-only|open-world/,
+      );
+      assert.throws(
+        // PUT is outside the ADR's allowed mutation verbs
+        () => op('put_probe', 'probe', {}, A.MUTATE_IDEMPOTENT, async () => ({}),
+          { meta: { mutation_adr: '0001-mutation-routes' }, http: { method: 'PUT', path: '/nope', adapter: () => ({}) } }),
+        /not allowed/,
+      );
+    } finally {
+      _resetForTest();
+      registerAll(new McpServer({ name: 'restore', version: '0' }));
+    }
   });
 
   test('the expected read surface binds: identity + snapshot + panes + diagnostics', () => {
-    const paths = httpRoutes().map((r) => r.path);
+    const paths = httpRoutes().filter((r) => r.method === 'GET').map((r) => r.path);
     for (const p of ['/state', '/quote', '/snapshot', '/panes', '/compat', '/diagnostics']) {
       assert.ok(paths.includes(p), `missing ${p}`);
     }
   });
 
-  test('route paths are unique and GET-only', () => {
+  test('mutation routes exist ONLY for paper mutation ops (ADR 0001 scope)', () => {
+    const mut = httpRoutes().filter((r) => r.method !== 'GET');
+    const paths = mut.map((r) => r.path);
+    assert.deepEqual(
+      [...paths].sort(),
+      ['/paper/brackets', '/paper/connect', '/paper/orders', '/paper/orders/cancel', '/paper/orders/modify', '/paper/positions/close'].sort(),
+    );
+    // Paper order POST must require the idempotency key — enforced in the adapter.
+    const place = getOp('paper_place_order');
+    assert.equal(place.transports.http.method, 'POST');
+  });
+
+  test('route paths are unique and every route carries its op + access', () => {
     const routes = httpRoutes();
-    const paths = routes.map((r) => r.path);
-    assert.equal(new Set(paths).size, paths.length, 'duplicate paths in derived table');
-    for (const r of routes) assert.equal(r.method, 'GET', r.path);
+    const paths = routes.map((r) => r.path + ' ' + r.method);
+    assert.equal(new Set(paths).size, paths.length, 'duplicate method+path in derived table');
+    for (const r of routes) assert.ok(['GET', 'POST', 'PATCH', 'DELETE'].includes(r.method), r.path);
   });
 
   test('gateway request path executes the op adapter and maps failures to 502 (envelope preserved)', async () => {

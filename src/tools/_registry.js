@@ -7,10 +7,11 @@
  *
  * The MCP layer registers ops verbatim (server.tool positional shape is
  * mirrored so migration is mechanical); the HTTP gateway derives its route
- * table from the SAME set. A route exists ONLY on ops that declare an http
- * transport, and only read-access ops may do so (op() refuses otherwise —
- * the §4.3 read-only rule is structural, not conventional; mutations need an
- * authorizing ADR to become bindable).
+ * table from the SAME set. GET routes exist on read-access ops; mutation
+ * routes (POST/PATCH/DELETE) exist ONLY on ops that cite ADR 0001 in
+ * `extra.meta.mutation_adr` and declare the env gate at gateway start
+ * (docs/adr/0001-mutation-routes.md) — the §4.3 read-only default still
+ * holds unless BOTH the op-level and server-level gates authorize.
  *
  * The http ADAPTER is the op's HTTP-specific binding: a small lambda that
  * turns (url, _deps) into the SAME core call the MCP handler makes — declared
@@ -80,21 +81,52 @@ export function op(name, description, schema, annotations, handler, extra = {}) 
   }
   let httpBinding = null;
   if (extra.http) {
+    // ADR 0001: mutations are declarable over HTTP only when the op carries
+    // the ADR reference in its meta — the escape hatch is explicit and
+    // per-op, never bulk. Without it, non-GET/non-read stays refused.
     const { path, adapter, method = 'GET' } = extra.http;
-    if (!path || typeof path !== 'string' || !path.startsWith('/')) {
-      throw new TypeError(`op '${name}': http.path must be an absolute path`);
+    const adr = extra.meta?.mutation_adr;
+    const mutates = access !== 'read';
+    const nonGet = method !== 'GET';
+    if (mutates || nonGet) {
+      if (adr !== '0001-mutation-routes') {
+        throw new TypeError(
+          `op '${name}': mutation HTTP binding requires meta.mutation_adr = ` +
+          "'0001-mutation-routes' (ADR 0001) — gateway is read-only by default",
+        );
+      }
     }
-    if (method !== 'GET') {
-      throw new TypeError(
-        `op '${name}': http method '${method}' requires an authorizing ADR — the ` +
-        'gateway is read-only by design; non-GET transports are unbindable for now',
-      );
-    }
-    if (access !== 'read') {
-      throw new TypeError(
-        `op '${name}': http binding requires access 'read' (gateway is read-only ` +
-        'by design; mutations need an authorizing ADR first)',
-      );
+    if (nonGet) {
+      if (!['POST', 'PATCH', 'DELETE'].includes(method)) {
+        throw new TypeError(
+          `op '${name}': http method '${method}' is not allowed; ` +
+          'mutation routes are POST (place), PATCH (modify), DELETE (cancel)',
+        );
+      }
+      if (access === 'destructive' || access === 'open-world') {
+        throw new TypeError(
+          `op '${name}': access '${access}' stays MCP-only per ADR 0001 — ` +
+          'destructive/open-world ops are never HTTP-bindable',
+        );
+      }
+      if (access !== 'order' && access !== 'mutate') {
+        throw new TypeError(
+          `op '${name}': access '${access}' is not HTTP-bindable (allowed: read GET, mutate/order POST/PATCH/DELETE under ADR 0001)`,
+        );
+      }
+      if (!path || typeof path !== 'string' || !path.startsWith('/')) {
+        throw new TypeError(`op '${name}': http.path must be an absolute path`);
+      }
+    } else {
+      if (!path || typeof path !== 'string' || !path.startsWith('/')) {
+        throw new TypeError(`op '${name}': http.path must be an absolute path`);
+      }
+      if (access !== 'read') {
+        throw new TypeError(
+          `op '${name}': http binding requires access 'read' (gateway is read-only ` +
+          'by design; mutations need an authorizing ADR first)',
+        );
+      }
     }
     if (typeof adapter !== 'function') {
       throw new TypeError(`op '${name}': http.adapter must be a function (url, _deps) => payload`);
@@ -113,7 +145,9 @@ export function op(name, description, schema, annotations, handler, extra = {}) 
     ...(extra.outputSchema ? { outputSchema: extra.outputSchema } : {}),
     annotations: Object.freeze({ ...annotations }),
     access,
-    // Transport bindings. http: { method, path, adapter(url, _deps)→payload }.
+    // Transport bindings. http: { method, path, adapter(url, _deps [, body, req])→payload }.
+    // Mutation adapters (POST/PATCH/DELETE) additionally receive the parsed
+    // JSON body and the raw request (ADR 0001).
     transports: Object.freeze({
       ...(httpBinding ? { http: httpBinding } : {}),
     }),
@@ -140,11 +174,12 @@ export function opCount() {
 /** Derived HTTP route table — read ops with an http transport binding. */
 export function httpRoutes() {
   return listOps()
-    .filter((o) => o.transports.http && o.access === 'read')
+    .filter((o) => o.transports.http)
     .map((o) => ({
       method: o.transports.http.method,
       path: o.transports.http.path,
       op: o.name,
+      access: o.access,
       handler: o.handler,
       adapter: o.transports.http.adapter,
     }));

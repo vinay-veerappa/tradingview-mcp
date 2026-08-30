@@ -192,3 +192,20 @@ Opt-in via `normalize: true` (+ optional `categories` denylist) on
 `data_get_pine_labels` / `session_snapshot` — raw `labels` always preserved;
 `named_levels` augments. Gateway: `GET /levels` (normalization implied,
 `?categories=csv`). Tests: `tests/named_levels.test.js`.
+
+## Mutation routes (ADR 0001)
+
+The gateway is READ-ONLY unless **both** gates arm: the op declares
+`meta.mutation_adr: '0001-mutation-routes'` (checked by `op()` — without it, any
+non-GET/non-read http binding is refused at registration) AND the gateway runs
+with `TV_GATEWAY_MUTATIONS=on` (`startGateway({ _env })`; unset or any other
+value → mutation routes 404, `http_mutations_disabled`). Only then are paper
+mutation routes served: `POST /paper/connect`, `POST /paper/orders` (**requires
+`client_order_id` in the body — no opt-out over HTTP**), `POST
+/paper/orders/cancel`, `PATCH /paper/orders/modify`, `POST
+/paper/positions/close`, `PATCH /paper/brackets`. Mutation adapters receive
+`(url, _deps, body, req)`; bodies are JSON, 1 MB cap. Non-loopback peers get
+403 even with the flag on; `destructive`/`open-world` ops stay MCP-only. See
+`docs/adr/0001-mutation-routes.md`. Tests: `tests/registry.test.js` (meta
+gate), `tests/gateway.test.js` (posture), `tests/order_idem.test.js` (HTTP
+replay).

@@ -2,21 +2,23 @@
  * Loopback HTTP gateway (gateway plan §2; P2-19-generated).
  *
  * The route table is DERIVED from the canonical operation registry
- * (_registry.js): only ops with an `http` transport binding appear, and only
- * read-access ops can carry one (op() refuses otherwise). Mutations are
- * structurally excluded, so the §4.3 read-only rule holds by construction
- * until an ADR authorizes HTTP placements.
+ * (_registry.js): only ops with an `http` transport binding appear. Read ops
+ * bind GET; mutation-class ops bind POST/PATCH/DELETE but ONLY when the op
+ * cites ADR 0001 (registry refuses otherwise) AND the server-level env gate
+ * TV_GATEWAY_MUTATIONS=on is armed — otherwise mutation routes are NOT
+ * INSTALLED (a request 404s, it does not 405). See docs/adr/0001-mutation-routes.md.
  *
  * Each op's http ADAPTER turns (url, _deps) into the same core call the MCP
  * handler makes — one source of truth per op, no per-transport handlers. The
  * `_deps` seam (failing injected evaluate) reaches core exactly as it did in
- * the first-slice hardcoded ROUTES table.
+ * the first-slice hardcoded ROUTES table. Mutation adapters receive the
+ * parsed JSON body as the 3rd argument.
  *
  * Hard rules:
- * - Binds 127.0.0.1 only. No auth beyond loopback (plan exclusion).
- * - No mutations: any non-GET → 405 with the error envelope.
- * - SSE cancellation on client disconnect (P2-18 slice): the subscriber's
- *   shouldStop fires on 'close' — no orphaned poll loops.
+ * - Binds 127.0.0.1 only. No auth beyond loopback (ADR 0001 §3: refusing
+ *   non-loopback peers is the entire escalation story; no tokens introduced).
+ * - Mutations require BOTH the ADR-cited op binding and TV_GATEWAY_MUTATIONS=on.
+ * - Non-loopback peers cannot mutate even when the flag is on (http_forbidden).
  * - Every JSON response is the stable envelope ({success, ...} or
  *   {success:false, error:{code, message, retryable, ...}}).
  */
@@ -26,6 +28,46 @@ import { getActiveProfile } from '../tools/_profiles.js';
 import { listCapabilities } from '../capabilities.js';
 import { buildErrorEnvelope } from '../tools/_format.js';
 import { httpRoutes } from '../tools/_registry.js';
+
+/**
+ * ADR 0001 gate — server-level mutation posture. Pure function over (env,
+ * addresses) so tests can exercise it without sockets: mutations are bindable
+ * only when TV_GATEWAY_MUTATIONS is exactly 'on' AND the peer is loopback.
+ */
+export function mutationsAuthorized(env, remoteAddress) {
+  return env?.TV_GATEWAY_MUTATIONS === 'on'
+    && (remoteAddress === '127.0.0.1' || remoteAddress === '::1' || remoteAddress === '::ffff:127.0.0.1');
+}
+
+/** Non-loopback peers are refused mutation access even with the flag on. */
+export function isLoopback(remoteAddress) {
+  return remoteAddress === '127.0.0.1' || remoteAddress === '::1' || remoteAddress === '::ffff:127.0.0.1';
+}
+
+function json(res, status, payload, extraHeaders = {}) {
+  res.writeHead(status, { 'Content-Type': 'application/json', ...extraHeaders });
+  res.end(JSON.stringify(payload));
+}
+
+/** Read + parse a JSON request body (mutation routes only). */
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', (c) => {
+      body += c;
+      if (body.length > 1_000_000) { // 1 MB cap — no legit order needs this
+        reject(Object.assign(new Error('request body too large'), { code: 'http_bad_request' }));
+        req.destroy();
+      }
+    });
+    req.on('end', () => {
+      if (!body.trim()) return resolve({});
+      try { resolve(JSON.parse(body)); }
+      catch { reject(Object.assign(new Error('invalid JSON body'), { code: 'http_bad_request' })); }
+    });
+    req.on('error', () => reject(Object.assign(new Error('request aborted'), { code: 'http_bad_request' })));
+  });
+}
 
 export const GATEWAY_DEFAULT_PORT = 9223;
 
@@ -85,80 +127,125 @@ async function handleStream(req, res, kind, url, _deps = null) {
   try { res.end(); } catch { /* socket already closed */ }
 }
 
-export async function handleRequest(req, res, _deps = null) {
+export async function handleRequest(req, res, _deps = null, _env = process.env) {
   const url = new URL(req.url, 'http://127.0.0.1');
   const pathMatch = url.pathname.match(/^\/stream\/([a-z]+)$/);
   const routes = httpRoutes();
+  const route = routes.find((r) => r.path === url.pathname && r.method === req.method);
+  // Route exists under a DIFFERENT method → 405; no route at all → 404.
+  const methodMatchesAnother = !route && routes.some((r) => r.path === url.pathname);
+  const knownPath = Boolean(pathMatch) || Boolean(route) || methodMatchesAnother
+    || url.pathname === '/health' || url.pathname === '/capabilities';
 
-  // ONE guard that keeps the 404-vs-405 distinction — known routes (derived
-  // read ops + /stream/<kind> + /health) get 405 on non-GET; unknown paths
-  // 404 regardless of method. Allow header only when it names a usable method.
-  const knownPath = Boolean(pathMatch) || routes.some((r) => r.path === url.pathname) || url.pathname === '/health' || url.pathname === '/capabilities';
-  if (req.method !== 'GET') {
-    // Mutations over HTTP are excluded by plan §4.3 until an ADR exists;
-    // the registry makes non-read ops unbindable in the first place.
-    // (Panel r2: omit Allow rather than sending Allow: undefined.)
-    const headers = { 'Content-Type': 'application/json', ...(knownPath && { Allow: 'GET' }) };
-    res.writeHead(knownPath ? 405 : 404, headers);
-    res.end(JSON.stringify(knownPath
-      ? { success: false, error: { code: 'http_method_not_allowed', message: 'gateway is read-only (mutations are MCP/CLI-only by design)', retryable: false } }
-      : { success: false, error: { code: 'http_not_found', message: `no route ${url.pathname}`, retryable: false } }));
+  if (req.method === 'GET') {
+    if (!knownPath) {
+      json(res, 404, { success: false, error: { code: 'http_not_found', message: `no route ${url.pathname}`, retryable: false } });
+      return;
+    }
+    if (pathMatch) {
+      await handleStream(req, res, pathMatch[1], url, _deps);
+      return;
+    }
+    if (url.pathname === '/health') {
+      json(res, 200, { success: true, gateway: 'up', profile: getActiveProfile() });
+      return;
+    }
+    // /capabilities: not an op (no CDP); static introspection over the registry
+    // + profile state. Kept as a gateway-native route beside the derived table.
+    if (url.pathname === '/capabilities') {
+      json(res, 200, {
+        success: true,
+        profile: getActiveProfile(),
+        capabilities: listCapabilities(),
+        ops_registered: routes.length,
+      });
+      return;
+    }
+    // GET on a registered read route → derived read adapter. A known path
+    // whose routes are all POST/PATCH/DELETE (mutation-only, ADR 0001) falls
+    // through to the shared 405 branch below.
+    if (!route) {
+      // fall through: handled by the mutation-posture 405 branch below
+    } else {
+      try {
+        const data = await route.adapter(url, _deps);
+        json(res, 200, data ?? { success: true });
+      } catch (err) {
+        // P2-4: same stable error envelope as the MCP layer — CdpError
+        // fidelity (reason → code, retryable, outcome_unknown) is preserved.
+        json(res, 502, buildErrorEnvelope(err));
+      }
+      return;
+    }
+  }
+
+  // ── Mutation dispatch (ADR 0001) ─────────────────────────────────────────
+  // Only POST/PATCH/DELETE reach here, and only on ops whose registry entry
+  // carries meta.mutation_adr (op() refuses the binding otherwise). Absent
+  // the env gate the response is 404 (route not installed), per ADR §3;
+  // a non-loopback peer gets 403 even with the flag on.
+  if (route) {
+    if (!mutationsAuthorized(_env, req.socket?.remoteAddress)) {
+      const loopback = isLoopback(req.socket?.remoteAddress);
+      json(res, loopback ? 404 : 403, {
+        success: false,
+        error: {
+          code: loopback ? 'http_mutations_disabled' : 'http_forbidden',
+          message: loopback
+            ? 'mutations over HTTP are disabled (start the gateway with TV_GATEWAY_MUTATIONS=on; ADR 0001)'
+            : 'mutations are loopback-only (ADR 0001 §3)',
+          retryable: false,
+        },
+      });
+      return;
+    }
+    try {
+      const body = await readBody(req);
+      const data = await route.adapter(url, _deps, body, req);
+      json(res, 200, data ?? { success: true });
+    } catch (err) {
+      // Malformed body → 400; adapter/core failures → P2-4 envelope.
+      if (err?.code === 'http_bad_request') {
+        json(res, 400, { success: false, error: { code: 'http_bad_request', message: err.message, retryable: false } });
+      } else {
+        json(res, 502, buildErrorEnvelope(err));
+      }
+    }
     return;
   }
-  if (!knownPath) {
-    res.writeHead(404, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ success: false, error: { code: 'http_not_found', message: `no route ${url.pathname}`, retryable: false } }));
+
+  // Known path, wrong method (e.g. GET on a POST-only mutation route, or
+  // POST on a read route): 405 with Allow naming what WOULD work.
+  if (knownPath) {
+    const allowed = routes.filter((r) => r.path === url.pathname).map((r) => r.method);
+    const extra = allowed.length ? { Allow: [...new Set([...allowed, 'GET' /* stream/health reads */])].join(', ') } : {};
+    json(res, 405, {
+      success: false,
+      error: {
+        code: 'http_method_not_allowed',
+        message: req.method === 'GET' && methodMatchesAnother
+          ? `route exists but expects ${routes.find((r) => r.path === url.pathname).method}`
+          : 'gateway serves GET for reads; mutations only when TV_GATEWAY_MUTATIONS=on (ADR 0001)',
+        retryable: false,
+      },
+    }, extra);
     return;
   }
 
-  if (pathMatch) {
-    await handleStream(req, res, pathMatch[1], url, _deps);
-    return;
-  }
-
-  if (url.pathname === '/health') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ success: true, gateway: 'up', profile: getActiveProfile() }));
-    return;
-  }
-
-  // /capabilities: not an op (no CDP); static introspection over the registry
-  // + profile state. Kept as a gateway-native route beside the derived table.
-  if (url.pathname === '/capabilities') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      success: true,
-      profile: getActiveProfile(),
-      capabilities: listCapabilities(),
-      ops_registered: httpRoutes().length,
-    }));
-    return;
-  }
-
-  const route = routes.find((r) => r.path === url.pathname);
-  try {
-    // Adapter = the op's HTTP transport binding (declared beside the op in the
-    // registry): turns (url, _deps) into the same core call the MCP handler
-    // makes, returning the raw payload. The offline _deps seam flows through.
-    const data = await route.adapter(url, _deps);
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(data ?? { success: true }));
-  } catch (err) {
-    // P2-4: same stable error envelope as the MCP layer — CdpError fidelity
-    // (reason → code, retryable, outcome_unknown) is preserved, not flattened.
-    res.writeHead(502, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(buildErrorEnvelope(err)));
-  }
+  json(res, 404, { success: false, error: { code: 'http_not_found', message: `no route ${url.pathname}`, retryable: false } });
 }
 
 /**
  * Start the gateway. Returns { port, server, close } — close() terminates all
  * SSE subscribers (shouldStop) and the listener.
+ * @param {object} opts { port, host, _deps }
+ * @param {object} _env ADR 0001 test seam: the env the mutation gate reads
+ *   (defaults to process.env). TV_GATEWAY_MUTATIONS === 'on' arms mutations.
  */
-export function startGateway({ port = GATEWAY_DEFAULT_PORT, host = '127.0.0.1', _deps = null } = {}) {
+export function startGateway({ port = GATEWAY_DEFAULT_PORT, host = '127.0.0.1', _deps = null, _env = process.env } = {}) {
   // _deps threads into every CDP-backed handler + subscribe (house seam):
   // offline tests inject a failing evaluate so no real connection is made.
-  const server = http.createServer((req, res) => handleRequest(req, res, _deps));
+  const server = http.createServer((req, res) => handleRequest(req, res, _deps, _env));
   const connections = new Set();
   server.on('connection', (conn) => {
     connections.add(conn);

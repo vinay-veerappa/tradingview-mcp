@@ -37,6 +37,26 @@ function get(port, path, method = 'GET') {
   });
 }
 
+function post(port, path, payload) {
+  return postRaw(port, path, JSON.stringify(payload));
+}
+
+function postRaw(port, path, rawBody) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      host: '127.0.0.1', port, path, method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(rawBody) },
+    }, (res) => {
+      let body = '';
+      res.on('data', (c) => (body += c));
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body }));
+    });
+    req.on('error', reject);
+    req.write(rawBody);
+    req.end();
+  });
+}
+
 function getSse(port, path, ms) {
   // fetch + AbortController — the same pattern proven to exit cleanly
   // (http.get + req.destroy leaves an error-time race that hangs --test).
@@ -108,12 +128,75 @@ describe('gateway (loopback HTTP + SSE)', () => {
       assert.equal(r.status, 405);
       const body = JSON.parse(r.body);
       assert.equal(body.error.code, 'http_method_not_allowed');
-      assert.ok(/read-only/.test(body.error.message));
+      assert.ok(/read-only|TV_GATEWAY_MUTATIONS/.test(body.error.message));
       // Panel finding (r1): stream routes are known paths — POST must 405, not 404.
       const rs = await get(port, '/stream/quote', 'POST');
       assert.equal(rs.status, 405);
       assert.equal(JSON.parse(rs.body).error.code, 'http_method_not_allowed');
     } finally { await close(); }
+  });
+
+  test('ADR 0001: mutation routes are 404 with the gate OFF (default posture)', async () => {
+    // Hermetic: explicit OFFLINE env — never trusts the developer's shell.
+    const { port, close } = await startGateway({ port: 0, _deps: OFFLINE_DEPS, _env: {} });
+    try {
+      const r = await post(port, '/paper/orders', { side: 'buy', qty: 1, client_order_id: 'x' });
+      assert.equal(r.status, 404, 'route not installed when TV_GATEWAY_MUTATIONS != on');
+      const body = JSON.parse(r.body);
+      assert.equal(body.error.code, 'http_mutations_disabled');
+      assert.ok(/TV_GATEWAY_MUTATIONS/.test(body.error.message));
+    } finally { await close(); }
+  });
+
+  test('ADR 0001: with the gate ON, POST reaches the adapter; body → core (_deps end-to-end)', async () => {
+    // Synthetic mutation op with a recording adapter: proves dispatch order
+    // (env gate → body parse → adapter(url, _deps, body)) without CDP.
+    const { _resetForTest, op } = await import('../src/tools/_registry.js');
+    const { A } = await import('../src/tools/_annotations.js');
+    const calls = [];
+    _resetForTest();
+    op('synth_mut', 'probe', {}, A.MUTATE_IDEMPOTENT, async () => ({}), {
+      meta: { mutation_adr: '0001-mutation-routes' },
+      http: { method: 'POST', path: '/synth-mut', adapter: (_url, _deps, body) => { calls.push(body); return { success: true, echo: body }; } },
+    });
+    const { port, close } = await startGateway({ port: 0, _deps: OFFLINE_DEPS, _env: { TV_GATEWAY_MUTATIONS: 'on' } });
+    try {
+      const ok = await post(port, '/synth-mut', { hello: 'world' });
+      assert.equal(ok.status, 200);
+      assert.deepEqual(JSON.parse(ok.body).echo, { hello: 'world' });
+      assert.deepEqual(calls[0], { hello: 'world' });
+      // Invalid JSON → 400 (not a 502): the body is the client's fault.
+      const bad = await postRaw(port, '/synth-mut', '{not json');
+      assert.equal(bad.status, 400);
+      assert.equal(JSON.parse(bad.body).error.code, 'http_bad_request');
+      // GET on a POST-only route → 405 with Allow: POST.
+      const wrong = await get(port, '/synth-mut');
+      assert.equal(wrong.status, 405);
+      assert.match(wrong.headers.allow, /POST/);
+    } finally {
+      await close();
+      _resetForTest();
+      registerAll(new McpServer({ name: 'gateway-test', version: '0' }));
+    }
+  });
+
+  test('ADR 0001: gate ON but flag value anything but "on" → still 404 (exact-match gate)', async () => {
+    const { _resetForTest, op } = await import('../src/tools/_registry.js');
+    const { A } = await import('../src/tools/_annotations.js');
+    _resetForTest();
+    op('synth_mut2', 'probe', {}, A.MUTATE_IDEMPOTENT, async () => ({}), {
+      meta: { mutation_adr: '0001-mutation-routes' },
+      http: { method: 'POST', path: '/synth-mut2', adapter: () => ({ success: true }) },
+    });
+    const { port, close } = await startGateway({ port: 0, _deps: OFFLINE_DEPS, _env: { TV_GATEWAY_MUTATIONS: '1' } });
+    try {
+      const r = await post(port, '/synth-mut2', {});
+      assert.equal(r.status, 404, '"1"/"true"/"yes" do NOT arm the gate — only the literal "on"');
+    } finally {
+      await close();
+      _resetForTest();
+      registerAll(new McpServer({ name: 'gateway-test', version: '0' }));
+    }
   });
 
   test('interval boundary (panel r2): 49→400, 50→ok, empty→400', async () => {
