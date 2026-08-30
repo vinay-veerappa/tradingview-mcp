@@ -43,7 +43,13 @@ async function checkForUpdate() {
   if (_updateCache && (Date.now() - _updateCache.at) < 3600_000) return _updateCache.value;
   let value = null;
   try {
-    const git = (args) => execSync(`git ${args}`, { timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+    // Anchor to the repo root, never process.cwd(): the MCP client may launch
+    // the server from anywhere, and a foreign cwd made `git rev-parse HEAD`
+    // read ANOTHER checkout's HEAD — a phantom update banner (seen live:
+    // local_commit 5ecf514c from an unrelated state while this repo sat 100+
+    // commits ahead of upstream). Same pattern as update.js REPO_ROOT.
+    const repoRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
+    const git = (args) => execSync(`git ${args}`, { cwd: repoRoot, timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
     const localSha = git('rev-parse HEAD');
     const remoteUrl = git('config --get remote.origin.url');
     const m = remoteUrl.match(/github\.com[:/](.+?)(?:\.git)?$/);
