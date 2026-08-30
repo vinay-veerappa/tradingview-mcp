@@ -1,23 +1,39 @@
 # TradingView MCP — Claude Instructions
 
-97 tools for reading and controlling a live TradingView Desktop chart via CDP (port 9222).
+MCP server for reading and controlling a live TradingView Desktop chart via CDP (port 9222).
+Surface is **profiled**: `base` (default, 30 tools), `pine`, `control`, `paper`; `devel` = everything
+(dynamic, set via `TRADINGVIEW_MCP_PROFILE` env or `profile_set`). `system_status` always shows
+what is visible/hidden and which capability gates are armed.
 
 ## Decision Tree — Which Tool When
 
-### "What's on my chart right now?"
-1. `chart_get_state` → symbol, timeframe, chart type, list of all indicators with entity IDs
-2. `data_get_study_values` → current numeric values from all visible indicators (RSI, MACD, BBands, EMAs, etc.)
+### "What's happening on my chart?" (FIRST READS — prefer these)
+1. `session_snapshot` → ONE call: quote + OHLCV summary + indicator values + Pine lines/labels/tables/boxes, with a snapshot hash for `chart_changes`
+2. `pane_scan` → multi-pane layouts: one row per pane (symbol/timeframe/last/change/freshness/indicator values)
+3. `system_status` → which tools this profile exposes + capability gates ("what's missing and why")
+
+### "What changed since I last looked?"
+- `chart_changes` with the prior `snapshot_hash` or section hashes → changed/unchanged without re-reading everything
+
+### "Is TV healthy?" (tool failures, after TV updates)
+1. `tv_compatibility_report` → per-version surface matrix (healthy/degraded/unavailable + recommended actions)
+2. `cdp_diagnostics` → CDP connection state, chart-mutation lock owner
+
+### "Chart identity in one call?"
+- `session_snapshot` returns `identity` (symbol/timeframe/type/studies) — prefer over raw `chart_get_state` when composing with other reads
+
+### "What's on my chart right now?" (fine-grained)
+1. `chart_get_state` → symbol, timeframe, chart type, indicator list with entity IDs
+2. `data_get_study_values` → current numeric values from all visible indicators
 3. `quote_get` → real-time price, OHLC, volume for current symbol
 
 ### "What levels/lines/labels are showing?"
-Custom Pine indicators draw with `line.new()`, `label.new()`, `table.new()`, `box.new()`. These are invisible to normal data tools. Use:
-
-1. `data_get_pine_lines` → horizontal price levels drawn by indicators (deduplicated, sorted high→low)
-2. `data_get_pine_labels` → text annotations with prices (e.g., "PDH 24550", "Bias Long ✓")
-3. `data_get_pine_tables` → table data formatted as rows (e.g., session stats, analytics dashboards)
-4. `data_get_pine_boxes` → price zones / ranges as {high, low} pairs
-
-Use `study_filter` parameter to target a specific indicator by name substring (e.g., `study_filter: "Profiler"`).
+Custom Pine graphics are invisible to normal data tools. `session_snapshot` collects them all;
+for targeted reads use `study_filter`:
+1. `data_get_pine_lines` → horizontal price levels (deduplicated, sorted high→low)
+2. `data_get_pine_labels` → text annotations with prices (e.g., "PDH 24550")
+3. `data_get_pine_tables` → table data as rows (session stats, dashboards)
+4. `data_get_pine_boxes` → price zones as {high, low} pairs
 
 ### "Give me price data"
 - `data_get_ohlcv` with `summary: true` → compact stats (high, low, range, change%, avg volume, last 5 bars)
@@ -25,21 +41,18 @@ Use `study_filter` parameter to target a specific indicator by name substring (e
 - `quote_get` → single latest price snapshot
 
 ### "Analyze my chart" (full report workflow)
-1. `quote_get` → current price
-2. `data_get_study_values` → all indicator readings
-3. `data_get_pine_lines` → key price levels from custom indicators
-4. `data_get_pine_labels` → labeled levels with context (e.g., "Settlement", "ASN O/U")
-5. `data_get_pine_tables` → session stats, analytics tables
-6. `data_get_ohlcv` with `summary: true` → price action summary
-7. `capture_screenshot` → visual confirmation
+1. `session_snapshot` (preset `analysis`) → quote + studies + Pine surface in one read
+2. `capture_screenshot` → visual confirmation
 
 ### "Change the chart"
-- `chart_set_symbol` → switch ticker (e.g., "AAPL", "ES1!", "NYMEX:CL1!")
-- `chart_set_timeframe` → switch resolution (e.g., "1", "5", "15", "60", "D", "W")
-- `chart_set_type` → switch chart style (Candles, HeikinAshi, Line, Area, Renko, etc.)
-- `chart_manage_indicator` → add or remove studies (use full name: "Relative Strength Index", not "RSI")
-- `chart_scroll_to_date` → jump to a date (ISO format: "2025-01-15")
-- `chart_set_visible_range` → zoom to exact date range (unix timestamps)
+- `chart_set_symbol` / `chart_set_timeframe` / `chart_set_type` → ticker / resolution / style
+- `chart_manage_indicator` → add or remove studies (FULL names: "Relative Strength Index", not "RSI")
+- `chart_scroll_to_date` → jump to a date (ISO format)
+
+⚠️ **Chart mutations are identity-guarded**: operations that flip the chart run under
+`withChartContext` (process-wide lock; concurrent ops queue). Destructive ops (`draw_clear`)
+require `expected_symbol` + `confirm: true` — a `precondition_failed` error means CHART
+IDENTITY MOVED: re-read with `session_snapshot` before retrying.
 
 ### "Work on Pine Script"
 1. `pine_set_source` → inject code into editor
@@ -66,12 +79,17 @@ Use `study_filter` parameter to target a specific indicator by name substring (e
 - `draw_shape` → horizontal_line, trend_line, rectangle, text (pass point + optional point2)
 - `draw_list` → see what's drawn
 - `draw_remove_one` → remove by ID
-- `draw_clear` → remove all
+- `draw_clear` → destructive-gated: requires `expected_symbol` (current chart symbol) + `confirm: true`; env opt-out `TV_DRAW_CLEAR_PRECONDITIONS=off`
 
 ### "Manage alerts"
-- `alert_create` → set price alert (condition: "crossing", "greater_than", "less_than")
-- `alert_list` → view active alerts
-- `alert_delete` → remove alerts
+- `alert_create` / `alert_list` / `alert_delete`
+
+### "Order placement & trading safety"
+- Paper orders accept `client_order_id` — replaying the same id returns the original result
+  (`deduplicated: true`) instead of double-filling; `preview: true` returns the computed order
+  without placing it
+- All errors return the stable envelope: `{ success: false, error: { code, message, retryable,
+  outcome_unknown, suggested_action, ... } }` — check `retryable`/`outcome_unknown` before automation retries
 
 ### "Navigate the UI"
 - `ui_open_panel` → open/close pine-editor, strategy-tester, watchlist, alerts, trading
@@ -83,6 +101,15 @@ Use `study_filter` parameter to target a specific indicator by name substring (e
 ### "TradingView isn't running"
 - `tv_launch` → auto-detect and launch TradingView with CDP on Mac/Win/Linux
 - `tv_health_check` → verify connection is working
+
+### "What MCP resources exist?" (observation surface)
+- `tradingview://chart/state` / `tradingview://chart/quote` / `tradingview://capabilities`
+- Read-through to the same handlers as their tool twins; `chart/quote` subscribers receive
+  `notifications/resources/updated` when quote content changes (server live-notifier)
+
+### "Switch toolsets mid-session"
+- `profile_set` with `confirm: true` → rebroadcasts the advertised tool list
+  (client must re-fetch tools/list; some hosts need reconnect)
 
 ### "What's the Paper Trading state?" / "Trade on Paper"
 Native Paper Trading only (stable broker id `"Paper"`). Never other brokers.
@@ -97,14 +124,15 @@ Use `TV_CDP_PORT` if multiple Desktops exist. See `docs/PAPER_TRADING_DISCOVERY.
 
 These tools can return large payloads. Follow these rules to avoid context bloat:
 
-1. **Always use `summary: true` on `data_get_ohlcv`** unless you specifically need individual bars
-2. **Always use `study_filter`** on pine tools when you know which indicator you want — don't scan all studies unnecessarily
-3. **Never use `verbose: true`** on pine tools unless the user specifically asks for raw drawing data with IDs/colors
-4. **Avoid calling `pine_get_source`** on complex scripts — it can return 200KB+. Only read if you need to edit the code.
-5. **Avoid calling `data_get_indicator`** on protected/encrypted indicators — their inputs are encoded blobs. Use `data_get_study_values` instead for current values.
-6. **Use `capture_screenshot`** for visual context instead of pulling large datasets — a screenshot is ~300KB but gives you the full visual picture
-7. **Call `chart_get_state` once** at the start to get entity IDs, then reference them — don't re-call repeatedly
-8. **Cap your OHLCV requests** — `count: 20` for quick analysis, `count: 100` for deeper work, `count: 500` only when specifically needed
+1. **Prefer `session_snapshot` over multi-tool fan-out** — one read replaces 5-7 individual calls
+2. **Always use `summary: true` on `data_get_ohlcv`** unless you specifically need individual bars
+3. **Always use `study_filter`** on pine tools when you know which indicator you want
+4. **Never use `verbose: true`** on pine tools unless the user specifically asks for raw drawing data
+5. **Avoid `pine_get_source`** on complex scripts (200KB+). If needed, read only the parts you edit.
+6. **Avoid `data_get_indicator`** on protected/encrypted indicators — use `data_get_study_values`
+7. **`chart_changes` with a prior hash instead of re-reading** — pass `since` from the last snapshot
+8. **Cap OHLCV requests** — `count: 20` quick, `100` deeper, `500` only when specifically needed
+9. **`pane_scan` for multi-pane layouts** — never click panes (`pane_set_symbol` changes the chart)
 
 ### Output Size Estimates (compact mode)
 | Tool | Typical Output |
@@ -121,8 +149,11 @@ These tools can return large payloads. Follow these rules to avoid context bloat
 
 ## Tool Conventions
 
-- All tools return `{ success: true/false, ... }`
-- Entity IDs (from `chart_get_state`) are session-specific — don't cache across sessions
+- All tools return `{ success: true/false, ... }`; failures carry the stable error envelope
+  (codes: `cdp_timeout`, `execution_context_lost`, `navigation_invalidated`, `target_replaced`,
+  `cdp_command_failed`, `precondition_failed`, `state_changed` + `evaluation_failed`)
+- Structured outputs: plain-object results also ship as `structuredContent`
+- Entity IDs are session-specific — don't cache across sessions
 - Pine indicators must be **visible** on chart for pine graphics tools to read their data
 - `chart_manage_indicator` requires **full indicator names**: "Relative Strength Index" not "RSI", "Moving Average Exponential" not "EMA", "Bollinger Bands" not "BB"
 - Screenshots save to `screenshots/` directory with timestamps
@@ -132,7 +163,10 @@ These tools can return large payloads. Follow these rules to avoid context bloat
 ## Architecture
 
 ```
-Claude Code ←→ MCP Server (stdio) ←→ CDP (localhost:9222) ←→ TradingView Desktop (Electron)
+MCP Client ←→ MCP Server (stdio, profiled 30-tool base) ←→ CDP (localhost:9222) ←→ TradingView Desktop (Electron)
+                 │
+                 ├─ subscribe(kind) → AsyncIterable  (CLI JSONL sinks · MCP resource notifications · future SSE)
+                 └─ resources: tradingview://chart/{state,quote}, capabilities
 ```
 
 Pine graphics path: `study._graphics._primitivesCollection.dwglines.get('lines').get(false)._primitivesDataById`
