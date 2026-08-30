@@ -1,7 +1,7 @@
 # MCP_SURFACE_AND_GATEWAY_PLAN.md
 
 **Repo:** `vinay-veerappa/tradingview-mcp` (local: `C:\Users\vinay\tvDownloadOHLC\tradingview-mcp`)
-**Status:** v3 PLAN — merged external review pass 1 (registry architecture) + review pass 2 (enhancement catalog, 2026-08-29). Not built. This document is the build contract.
+**Status:** v3 **BUILT** — all 8 priority steps implemented and tested (tag `v2.3.0-surface-v3`, battery 432/432). This document is now the *reference spec*; behavioral truth lives in the code + tests.
 **Revision history:**
 - v1 — shared core + three thin wrappers (retracted).
 - v2 (post-review-1, `46390f48`) — canonical operation registry, single CDP-owning host, exact profile table + measured budgets, contract corrections.
@@ -177,3 +177,9 @@ Order placement over HTTP (paper or otherwise) without a new ADR · auth beyond 
 
 - Pass 1 (2026-08-29): F1-F7 verification table; registry + host topology adopted; v1 pseudocode/budget retracted. `46390f48`.
 - Pass 2 (2026-08-29): 20-item catalog adopted with P2-n IDs; `session_briefing` superseded by `session_snapshot`; priority queue reordered per pass 2. Verified before adoption: `jsonResult` text-only (`_format.js:5`), zero annotation/resource usage in `src/`, `CdpError`'s existing fields, pane-tool surface.
+- Build (2026-08-29): all 8 queue steps landed → tag `v2.3.0-surface-v3`. Build-order deltas worth knowing:
+  - P2-19 landed **partially** (profiles + `system_status`/`profile_set` + budget CI): per-op registry generation deferred — `_annotations.js` access-class table + per-file registration remain the mapping until the full registry lands in the HTTP/gateway phase.
+  - P2-16 freshness metadata ships *inside* snapshot/scan payloads (`observed_at`, bar freshness) rather than as universal middleware — full P2-16 attaches at registry time.
+  - P2-18 cancellation: `subscribe()` honors `shouldStop`/`break`; MCP request-cancellation plumbing (`RequestHandlerExtra.signal`) still pending.
+  - Notable latent defects found by the wire checks: `z.record()` breaks SDK zod-compat (tools/list throws), annotation double-inserts from the codemod, and a dropped-stash incident (recovered via `git fsck --unreachable`).
+  - Housekeeping remaining: `CLAUDE.md` decision tree rewrite for the profiles era; `TRADINGVIEW_MCP_PROFILE` note into `.mcp.json`; SSE adapter over `subscribe()` (gateway plan §2) still future work.
