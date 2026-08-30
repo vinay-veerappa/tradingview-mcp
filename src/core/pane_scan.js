@@ -109,13 +109,17 @@ const PANE_SCAN_JS = `
 
           // active pane flag
           try {
-            if (c && window.TradingViewApi._activeChartWidgetWV.value()._chartWidget === c) row.active = true;
+            if (c && window.TradingViewApi._activeChartWidgetWV.value()._chartWidget === c) { row.active = true; out.active_index = i; }
           } catch (e6) {}
         } catch (eRow) { row.error = eRow.message; }
         out.panes.push(row);
       }
       return out;
-    })()
+    } catch (eGlobal) {
+      out.global_error = eGlobal ? eGlobal.message : String(eGlobal);
+      return out;
+    }
+  })()
   `
   .split('MAXV').join('25')
   .split('eRow').join('e');
