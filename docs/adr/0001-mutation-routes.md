@@ -99,6 +99,19 @@ calls already emit. No new log destination.
   are N chances to forget. Rejected.
 - **Token-authenticated remote mutations**: real security work with real threat modeling
   for a single-user harness; disproportionate now. Rejected without prejudice.
+- **Why the env gate and not loopback-only** (open trade-off, revisited if it chafes):
+  loopback is not an auth boundary — every local process can connect, and web pages can
+  SEND requests to localhost regardless of CORS (drive-by/CSRF-against-localhost); CORS
+  blocks reading responses, not firing POSTs. With mutations armed by default, a struck
+  browser tab could `POST /paper/orders` unauthenticated. The flag is the only
+  gate between "read-only loopback service" and "order-capable loopback service", so it
+  must be exact (`on` — `1`/`true` don't arm) and explicit. Known cost: the flag does not
+  discriminate between *who* on the machine mutates (MCP client vs. stray script) —
+  everything behind the gate is trusting the flag if you ignore it, by design. If real
+  usage shows the risk is over-modeled for a single-user machine that never browses
+  locally, the graduated fallback (idempotent mutates under `on`; place/close under a
+  second value like `place`) is a one-line amendment, deliberately NOT built until
+  needed — YAGNI cuts both ways.
 
 ## Verification hooks (what proves each step landed)
 

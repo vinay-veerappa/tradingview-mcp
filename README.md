@@ -194,6 +194,7 @@ tv replay start/step/stop/status/autoplay/trade
 tv stream quote/bars/values/lines/labels/tables/all
 tv ui click/keyboard/hover/scroll/find/eval/type/panel/fullscreen/mouse
 tv screenshot / discover / ui-state / range / scroll
+tv gateway                          # loopback HTTP read surface + SSE
 ```
 
 ## Streaming
@@ -222,6 +223,7 @@ Claude reads [`CLAUDE.md`](CLAUDE.md) automatically when working in this project
 |------------|---------------|
 | "What's on my chart?" | `chart_get_state` → `data_get_study_values` → `quote_get` |
 | "What levels are showing?" | `data_get_pine_lines` → `data_get_pine_labels` |
+| "What are the named levels?" | `data_get_pine_labels` with `normalize: true` (or gateway `GET /levels`) |
 | "Read the session table" | `data_get_pine_tables` with `study_filter` |
 | "Give me a full analysis" | `quote_get` → `data_get_study_values` → `data_get_pine_lines` → `data_get_pine_labels` → `data_get_pine_tables` → `data_get_ohlcv` (summary) → `capture_screenshot` |
 | "Switch to AAPL daily" | `chart_set_symbol` → `chart_set_timeframe` |
@@ -231,7 +233,11 @@ Claude reads [`CLAUDE.md`](CLAUDE.md) automatically when working in this project
 | "Draw a level at 24500" | `draw_shape` (horizontal_line) |
 | "Take a screenshot" | `capture_screenshot` |
 
-## Tool Reference (97 MCP tools)
+## Tool Reference (104 MCP tools)
+
+> Tools are **profiled**: the default `base` profile exposes 30; `pine`, `control`,
+> `paper` add more; `devel` = everything. `system_status` shows what is visible.
+> Set via `TRADINGVIEW_MCP_PROFILE` or the `profile_set` tool.
 
 ### Chart Reading
 
@@ -249,7 +255,7 @@ Read `line.new()`, `label.new()`, `table.new()`, `box.new()` output from any vis
 | Tool | When to use | Output size |
 |------|------------|-------------|
 | `data_get_pine_lines` | Read horizontal price levels (support/resistance, session levels) | ~1-3KB |
-| `data_get_pine_labels` | Read text annotations + prices ("PDH 24550", "Bias Long") | ~2-5KB |
+| `data_get_pine_labels` | Read text annotations + prices ("PDH 24550", "Bias Long"). `normalize: true` adds analysis-ready `named_levels` (PDH/PDL/OR/settlement/ICH tokens) | ~2-5KB |
 | `data_get_pine_tables` | Read data tables (session stats, analytics dashboards) | ~1-4KB |
 | `data_get_pine_boxes` | Read price zones / ranges as {high, low} pairs | ~1-2KB |
 
@@ -344,6 +350,72 @@ CLI: `tv paper status|panel|connect|account|accounts|switch-account|positions|or
 
 If the MCP/CLI points at the wrong Desktop instance, set `TV_CDP_PORT` (and optionally `TV_CDP_HOST`) to the process launched with `--remote-debugging-port`.
 
+## HTTP Gateway (loopback)
+
+Optional read surface + Server-Sent-Events for local consumers that are not MCP clients:
+
+```bash
+tv gateway                 # http://127.0.0.1:9223 — read-only by default
+```
+
+| Route | Purpose |
+|-------|---------|
+| `GET /health`, `/capabilities` | Liveness, profile + registry introspection |
+| `GET /state`, `/quote`, `/ohlcv`, `/values`, `/panes` | Chart reads (same core calls as the tools) |
+| `GET /snapshot` | Full `session_snapshot` (`?preset=analysis`, `?normalize=true` for named levels) |
+| `GET /levels` | P2-10 named levels only — PDH/PDL/OR/settlement parsed for you (`?categories=session,ict`) |
+| `GET /compat`, `/diagnostics`, `/pine/analyze` | Compatibility report, CDP diagnostics, offline Pine analysis |
+| `GET /paper/status`, `/paper/account`, `/paper/positions`, `/paper/orders` | Paper reads |
+| `GET /stream/{quote,bars,values,panes}` | SSE streams (SSE disconnect cancels polling) |
+
+**Mutations (ADR 0001)** are disabled by default and stay that way unless BOTH gates arm: the op
+cites `meta.mutation_adr` in the registry AND you start the gateway with
+`TV_GATEWAY_MUTATIONS=on`. Then paper-only routes exist: `POST /paper/connect`,
+`POST /paper/orders` (**requires `client_order_id` in the body** — the same id on retry
+replays the original outcome instead of duplicating), `POST /paper/orders/cancel`,
+`PATCH /paper/orders/modify`, `POST /paper/positions/close`, `PATCH /paper/brackets`.
+Non-loopback peers get 403 even with the flag on; destructive ops are never HTTP-bindable.
+Details: [docs/adr/0001-mutation-routes.md](docs/adr/0001-mutation-routes.md).
+
+Binds 127.0.0.1 only — no auth beyond loopback; do not expose it.
+
+#### Why `TV_GATEWAY_MUTATIONS` exists
+
+The flag is not caution theater — it is the gateway's *only* auth. Constraints that make it
+load-bearing:
+
+- **Loopback is not an identity check.** Every process on your machine can reach
+  127.0.0.1:9223. More importantly, YOUR BROWSER reaches it too: web pages can freely SEND
+  requests to `http://127.0.0.1:<port>/...` (CORS only blocks reading responses, not firing
+  POSTs — the classic drive-by/CSRF-against-localhost attack). With the gate off, a tab on a
+  random charting website that POSTs `/paper/orders` gets a 404 and nothing happens. With the
+  gate on, it could fabricate paper fills, cancel working orders, or close positions — silently.
+- **Read/write asymmetry.** A leaked market read is an annoyance; an unauthenticated state
+  change corrupts a replay or a scripted strategy run with no visible trace.
+- **Consistency with the rest of the surface.** The [Security Boundaries](#security-boundaries)
+  table already uses disabled-until-explicit-ack for every high-consequence capability
+  (`ui_evaluate`, `replay_trade`, `tv_update`). The transport gate is the same pattern, one
+  layer down — one exact value (`on`), generic truthy values (`1`, `true`, `yes`) are rejected.
+- **It does not gate *you*.** Every mutation remains available unflagged over MCP and the CLI.
+  The flag gates everything else on the machine, at the cost of one env var when you choose to
+  run an order-capable HTTP surface.
+
+> If this ever feels heavier than the risk it covers (e.g. you never browse on the trading
+> machine), the graduated middle ground — flag `on` arms only idempotent mutate ops while
+> place/close still require a second acknowledgment — is a one-line ADR amendment, not a
+> redesign. Filed as an open trade-off in the ADR's alternatives section.
+
+```powershell
+# Arming mutations (PowerShell) — the gateway startup banner confirms the posture:
+$env:TV_GATEWAY_MUTATIONS = 'on'; tv gateway
+# Example: place an idempotent paper order over HTTP
+curl -X POST http://127.0.0.1:9223/paper/orders `
+  -H 'Content-Type: application/json' `
+  -d '{"side":"buy","type":"limit","qty":1,"price":24400,"client_order_id":"my-unique-key-001"}'
+# Retry the SAME body after a timeout → the ORIGINAL outcome replays (deduplicated: true),
+# never a second fill. Change the id → a genuinely new order.
+```
+
 ## Context Management
 
 Tools return compact output by default to minimize context usage. For a typical "analyze my chart" workflow, total context is ~5-10KB instead of ~80KB.
@@ -400,12 +472,17 @@ fail-closed verification without changing callers that pass only `name`.
 ## Architecture
 
 ```
-Claude Code  ←→  MCP Server (stdio)  ←→  CDP (port 9222)  ←→  TradingView Desktop (Electron)
+Claude Code  ←→  MCP Server (stdio, profiled)  ←→  CDP (port 9222)  ←→  TradingView Desktop (Electron)
+                     │
+                     ├─ Operation registry (P2-19): one definition per op → MCP tools + HTTP gateway routes
+                     ├─ Loopback gateway (tv gateway): GET read surface, SSE streams, ADR-0001 paper mutations
+                     └─ subscribe(kind): transport-neutral AsyncIterable → CLI JSONL · MCP resource updates · SSE
 ```
 
-- **Transport**: MCP over stdio (97 tools) + CLI (`tv` command, 31 commands with 67 subcommands)
+- **Transport**: MCP over stdio (104 tools across profiles) + CLI (`tv` command) + optional loopback HTTP gateway (SSE)
 - **Connection**: Chrome DevTools Protocol on localhost:9222
-- **Streaming**: Poll-and-diff loop with deduplication, JSONL output to stdout
+- **Streaming**: transport-neutral subscription primitive with per-subscriber cancellation
+- **Safety**: annotation-derived access classes, P2-5 preconditions, P2-6 order idempotency, P2-4 stable error envelope — one registry is the single source of truth
 - **No dependencies** beyond `@modelcontextprotocol/sdk` and `chrome-remote-interface`
 
 ## Attributions

@@ -209,3 +209,13 @@ mutation routes served: `POST /paper/connect`, `POST /paper/orders` (**requires
 `docs/adr/0001-mutation-routes.md`. Tests: `tests/registry.test.js` (meta
 gate), `tests/gateway.test.js` (posture), `tests/order_idem.test.js` (HTTP
 replay).
+
+Rationale (don't "simplify" this away): loopback is NOT an identity check —
+any local process can connect, and browser tabs can POST to
+`http://127.0.0.1:<port>` regardless of CORS (drive-by/CSRF-localhost). The
+flag is the only auth between "read-only loopback service" and "order-capable
+loopback service"; read/write asymmetry is why it isn't default-on. The flag
+gates everything else on the machine, not the user — MCP/CLI mutations need no
+flag. If it proves too heavy, the graduated fallback (idempotent mutates under
+`on`, place/close under a second value) is a one-line ADR amendment — see the
+ADR's alternatives section before proposing it.
