@@ -7,6 +7,7 @@ import {
 } from '../src/capabilities.js';
 import { uiEvaluate } from '../src/core/ui.js';
 import { registerUiTools } from '../src/tools/ui.js';
+import { _resetForTest } from '../src/tools/_registry.js';
 import { getRegisteredHandler } from '../src/cli/router.js';
 import '../src/cli/commands/ui.js';
 
@@ -21,6 +22,9 @@ function registeredUiEvaluate(deps) {
       tools.set(name, { description, schema, annotations, handler });
     },
   };
+  // Ops live in the canonical registry (P2-19) — module-level shared state.
+  // Re-registering a tool file (per-test seam injection) needs a clean slate.
+  _resetForTest();
   registerUiTools(server, deps);
   return tools.get('ui_evaluate');
 }

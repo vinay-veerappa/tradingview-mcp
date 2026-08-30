@@ -1,10 +1,12 @@
 import { z } from 'zod';
 import { A } from './_annotations.js';
+import { op } from './_registry.js';
+import { toolFromRegistry } from './index.js';
 import { jsonResult, errorResult } from './_format.js';
 import * as core from '../core/batch.js';
 
 export function registerBatchTools(server) {
-  server.tool('batch_run', 'Run an action across multiple symbols and/or timeframes', {
+  op('batch_run', 'Run an action across multiple symbols and/or timeframes', {
     symbols: z.array(z.string()).describe('Array of symbols to iterate (e.g., ["BTCUSD", "ETHUSD", "AAPL"])'),
     timeframes: z.array(z.string()).optional().describe('Array of timeframes (e.g., ["D", "60", "15"])'),
     action: z.enum(['screenshot', 'get_ohlcv', 'get_strategy_results']).describe('Action to run'),
@@ -12,7 +14,8 @@ export function registerBatchTools(server) {
     ohlcv_count: z.coerce.number().optional().describe('Bar count for get_ohlcv action (default 100)'),
   },
     A.MUTATE_ORDER, async ({ symbols, timeframes, action, delay_ms, ohlcv_count }) => {
-    try { return jsonResult(await core.batchRun({ symbols, timeframes, action, delay_ms, ohlcv_count })); }
-    catch (err) { return errorResult(err); }
-  });
+      try { return jsonResult(await core.batchRun({ symbols, timeframes, action, delay_ms, ohlcv_count })); }
+      catch (err) { return errorResult(err); }
+    });
+  toolFromRegistry(server, 'batch_run');
 }

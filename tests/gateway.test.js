@@ -1,8 +1,15 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { startGateway, handleRequest, GATEWAY_DEFAULT_PORT } from '../src/gateway/http.js';
 import { SUBSCRIPTION_KINDS } from '../src/core/subscribe.js';
+import { registerAll } from '../src/tools/index.js';
+
+// The gateway's route table is DERIVED from the canonical operation registry
+// (P2-19) — module-level shared state. Fill it exactly as server.js does, so
+// the derived routes exist in this process.
+registerAll(new McpServer({ name: 'gateway-test', version: '0' }));
 
 // Ephemeral-port gateway. Route handlers touch CDP unless we inject _deps —
 // and a REAL CDP client is a pooled socket that keeps the test process alive.
@@ -140,18 +147,47 @@ describe('gateway (loopback HTTP + SSE)', () => {
     } finally { await close(); }
   });
 
-  test('upstream failure yields retryable envelope (route handler throws)', async () => {
+  test('upstream failure yields the stable error envelope (route adapter throws)', async () => {
     const { port, close } = await boot();
     try {
-      // Offline deps: /state → getState throws → 502 upstream_failed.
+      // Offline deps: /state → getState throws → 502. Since P2-19 the gateway
+      // reuses the MCP layer's buildErrorEnvelope (P2-4): the generic error is
+      // message-classified to cdp_command_failed (retryable=false) — the same
+      // code a tool call would surface for the same failure.
       const r = await get(port, '/state');
       assert.equal(r.status, 502);
       const body = JSON.parse(r.body);
       assert.equal(body.success, false);
-      assert.equal(body.error.code, 'upstream_failed');
-      assert.equal(body.error.retryable, true);
+      assert.equal(body.error.code, 'cdp_command_failed');
       assert.ok(/ECONNREFUSED EPIPE/.test(body.error.message), 'real error message carried through');
+      assert.ok(body.error.suggested_action, 'stable envelope carries suggested_action');
     } finally { await close(); }
+  });
+
+  test('CdpError fidelity survives the gateway hop (P2-4 over HTTP)', async () => {
+    // A CdpError-shaped failure (e.g. target_replaced) keeps its reason as the
+    // envelope code and its retryability — not flattened to upstream_failed.
+    const { _resetForTest, op } = await import('../src/tools/_registry.js');
+    const { A } = await import('../src/tools/_annotations.js');
+    _resetForTest();
+    op('cdp_fail_probe', 'probe', {}, A.READ, async () => ({}), {
+      http: {
+        path: '/cdp-fail-probe',
+        adapter: () => { throw Object.assign(new Error('session closed'), { name: 'CdpError', reason: 'target_replaced' }); },
+      },
+    });
+    const { port, close } = await startGateway({ port: 0 });
+    try {
+      const r = await get(port, '/cdp-fail-probe');
+      assert.equal(r.status, 502);
+      const body = JSON.parse(r.body);
+      assert.equal(body.error.code, 'target_replaced');
+      assert.equal(body.error.retryable, true);
+    } finally {
+      await close();
+      _resetForTest();
+      registerAll(new McpServer({ name: 'gateway-test', version: '0' }));
+    }
   });
 
   test('default port constant sane', () => {

@@ -1,33 +1,38 @@
 import { z } from 'zod';
 import { A } from './_annotations.js';
+import { op } from './_registry.js';
+import { toolFromRegistry } from './index.js';
 import { jsonResult, errorResult } from './_format.js';
 import * as core from '../core/alerts.js';
 
 export function registerAlertTools(server, { evaluate, evaluateAsync } = {}) {
   const _deps = { evaluate, evaluateAsync };
-  server.tool('alert_create', 'Create a price alert on the current chart symbol via TradingView\'s alert API', {
+  op('alert_create', 'Create a price alert on the current chart symbol via TradingView\'s alert API', {
     condition: z.string().describe('Alert condition: "crossing", "greater_than", or "less_than"'),
     price: z.coerce.number().describe('Price level for the alert'),
     message: z.string().optional().describe('Alert message'),
   },
     A.MUTATE_IDEMPOTENT, async ({ condition, price, message }) => {
-    try { return jsonResult(await core.create({ condition, price, message, _deps })); }
-    catch (err) { return errorResult(err); }
-  });
+      try { return jsonResult(await core.create({ condition, price, message, _deps })); }
+      catch (err) { return errorResult(err); }
+    });
+  toolFromRegistry(server, 'alert_create');
 
-  server.tool('alert_list', 'List active alerts', {},
+  op('alert_list', 'List active alerts', {},
     A.READ, async () => {
-    try { return jsonResult(await core.list({ _deps })); }
-    catch (err) { return errorResult(err); }
-  });
+      try { return jsonResult(await core.list({ _deps })); }
+      catch (err) { return errorResult(err); }
+    });
+  toolFromRegistry(server, 'alert_list');
 
-  server.tool('alert_delete', `Delete a specific alert by id, or ALL active alerts. Deleting all is irreversible and requires confirm: "${core.DELETE_ALL_CONFIRMATION}" — a bare delete_all is refused.`, {
+  op('alert_delete', `Delete a specific alert by id, or ALL active alerts. Deleting all is irreversible and requires confirm: "${core.DELETE_ALL_CONFIRMATION}" — a bare delete_all is refused.`, {
     alert_id: z.coerce.number().optional().describe('Alert id to delete (from alert_list)'),
     delete_all: z.coerce.boolean().optional().describe('Delete all active alerts (requires the confirm token)'),
     confirm: z.string().optional().describe(`Must equal "${core.DELETE_ALL_CONFIRMATION}" when delete_all is set`),
   },
     A.DESTRUCTIVE, async ({ alert_id, delete_all, confirm }) => {
-    try { return jsonResult(await core.deleteAlerts({ alert_id, delete_all, confirm, _deps })); }
-    catch (err) { return errorResult(err); }
-  });
+      try { return jsonResult(await core.deleteAlerts({ alert_id, delete_all, confirm, _deps })); }
+      catch (err) { return errorResult(err); }
+    });
+  toolFromRegistry(server, 'alert_delete');
 }

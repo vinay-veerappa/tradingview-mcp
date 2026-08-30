@@ -29,15 +29,16 @@ function runToJsonl(kind, { interval, dedupe = true, label } = {}) {
   process.stderr.write(`[stream:${effLabel}] started, interval=${interval || 'default'}ms, Ctrl+C to stop\n`);
   const start = Date.now();
 
-  const stop = () => { iterator.return?.(); };
+  let iterator = null;
+  const stop = () => { iterator?.return?.(); };
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
 
-  const it = subscribe(kind, { interval, dedupe });
-  void it;
+  iterator = subscribe(kind, { interval, dedupe });
+  const it = iterator;
   // eslint-disable-next-line no-async-promise-executor
   return new Promise(async (resolve) => {
-    for await (const event of subscribe(kind, { interval, dedupe })) {
+    for await (const event of it) {
       const line = JSON.stringify(event);
       process.stdout.write(line + '\n');
       if (event.kind === 'connection' && event.status === 'lost') continue;

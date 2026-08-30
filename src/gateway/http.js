@@ -1,14 +1,16 @@
 /**
- * Loopback HTTP gateway (gateway plan §2, first slice).
+ * Loopback HTTP gateway (gateway plan §2; P2-19-generated).
  *
- * The read surface exposed over localhost HTTP with JSON responses, plus SSE
- * streams as sinks over the SAME subscribe() primitive the MCP resources and
- * CLI use (P2-12). Read-only BY DESIGN: mutations stay MCP/CLI-side until an
- * ADR authorizes HTTP placement (plan §4.3 exclusion).
+ * The route table is DERIVED from the canonical operation registry
+ * (_registry.js): only ops with an `http` transport binding appear, and only
+ * read-access ops can carry one (op() refuses otherwise). Mutations are
+ * structurally excluded, so the §4.3 read-only rule holds by construction
+ * until an ADR authorizes HTTP placements.
  *
- * ROUTES is the embryonic registry for this transport: one table declaring
- * {method, path, handler, stream?}; every binding derives from it. Handlers
- * are the same core handlers the tool twins call — one source of truth.
+ * Each op's http ADAPTER turns (url, _deps) into the same core call the MCP
+ * handler makes — one source of truth per op, no per-transport handlers. The
+ * `_deps` seam (failing injected evaluate) reaches core exactly as it did in
+ * the first-slice hardcoded ROUTES table.
  *
  * Hard rules:
  * - Binds 127.0.0.1 only. No auth beyond loopback (plan exclusion).
@@ -19,39 +21,16 @@
  *   {success:false, error:{code, message, retryable, ...}}).
  */
 import http from 'http';
-import { getState } from '../core/chart.js';
-import { getQuote } from '../core/data.js';
-import { sessionSnapshot } from '../core/snapshot.js';
-import { paneScan } from '../core/pane_scan.js';
-import { compatibilityReport, diagnostics } from '../core/reliability.js';
 import { subscribe, SUBSCRIPTION_KINDS } from '../core/subscribe.js';
 import { getActiveProfile } from '../tools/_profiles.js';
 import { listCapabilities } from '../capabilities.js';
+import { buildErrorEnvelope } from '../tools/_format.js';
+import { httpRoutes } from '../tools/_registry.js';
 
 export const GATEWAY_DEFAULT_PORT = 9223;
 
-const ROUTES = [
-  { method: 'GET', path: '/state', handler: (_req, _url, _deps) => getState({ _deps }) },
-  { method: 'GET', path: '/quote', handler: (_req, _url, _deps) => getQuote({}, _deps) },
-  { method: 'GET', path: '/snapshot', handler: (_req, url, _deps) => {
-    const opts = {};
-    if (url.searchParams.get('preset')) opts.preset = url.searchParams.get('preset');
-    if (url.searchParams.get('symbol')) opts.symbol = url.searchParams.get('symbol');
-    if (url.searchParams.get('timeframe')) opts.timeframe = url.searchParams.get('timeframe');
-    return sessionSnapshot(opts, _deps);
-  } },
-  { method: 'GET', path: '/panes', handler: (_req, _url, _deps) => paneScan(_deps) },
-  { method: 'GET', path: '/capabilities', handler: () => ({
-      success: true,
-      profile: getActiveProfile(),
-      capabilities: listCapabilities(),
-    }) },
-  { method: 'GET', path: '/compat', handler: (_req, _url, _deps) => compatibilityReport(_deps) },
-  { method: 'GET', path: '/diagnostics', handler: (_req, _url, _deps) => diagnostics(_deps) },
-];
-
 // SSE route: /stream/<kind> — subscribe() sink with disconnect cancellation.
-const STREAM_KINDS = new Set(['quote', 'bars', 'values', 'panes']);
+const STREAM_KINDS = new Set(SUBSCRIPTION_KINDS);
 
 function sseHead(res) {
   res.writeHead(200, {
@@ -109,13 +88,15 @@ async function handleStream(req, res, kind, url, _deps = null) {
 export async function handleRequest(req, res, _deps = null) {
   const url = new URL(req.url, 'http://127.0.0.1');
   const pathMatch = url.pathname.match(/^\/stream\/([a-z]+)$/);
+  const routes = httpRoutes();
 
-  // Panel finding (r1): ONE guard that keeps the 404-vs-405 distinction —
-  // known routes (incl. /stream/<kind>) get 405 on non-GET; unknown paths 404
-  // regardless of method. Allow header only when it names a usable method.
-  const knownPath = Boolean(pathMatch) || ROUTES.some((r) => r.path === url.pathname) || url.pathname === '/health';
+  // ONE guard that keeps the 404-vs-405 distinction — known routes (derived
+  // read ops + /stream/<kind> + /health) get 405 on non-GET; unknown paths
+  // 404 regardless of method. Allow header only when it names a usable method.
+  const knownPath = Boolean(pathMatch) || routes.some((r) => r.path === url.pathname) || url.pathname === '/health' || url.pathname === '/capabilities';
   if (req.method !== 'GET') {
-    // Mutations over HTTP are excluded by plan §4.3 until an ADR exists.
+    // Mutations over HTTP are excluded by plan §4.3 until an ADR exists;
+    // the registry makes non-read ops unbindable in the first place.
     // (Panel r2: omit Allow rather than sending Allow: undefined.)
     const headers = { 'Content-Type': 'application/json', ...(knownPath && { Allow: 'GET' }) };
     res.writeHead(knownPath ? 405 : 404, headers);
@@ -141,14 +122,32 @@ export async function handleRequest(req, res, _deps = null) {
     return;
   }
 
-  const route = ROUTES.find((r) => r.path === url.pathname);
+  // /capabilities: not an op (no CDP); static introspection over the registry
+  // + profile state. Kept as a gateway-native route beside the derived table.
+  if (url.pathname === '/capabilities') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      success: true,
+      profile: getActiveProfile(),
+      capabilities: listCapabilities(),
+      ops_registered: httpRoutes().length,
+    }));
+    return;
+  }
+
+  const route = routes.find((r) => r.path === url.pathname);
   try {
-    const data = await route.handler(req, url, _deps);
+    // Adapter = the op's HTTP transport binding (declared beside the op in the
+    // registry): turns (url, _deps) into the same core call the MCP handler
+    // makes, returning the raw payload. The offline _deps seam flows through.
+    const data = await route.adapter(url, _deps);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(data ?? { success: true }));
   } catch (err) {
+    // P2-4: same stable error envelope as the MCP layer — CdpError fidelity
+    // (reason → code, retryable, outcome_unknown) is preserved, not flattened.
     res.writeHead(502, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ success: false, error: { code: 'upstream_failed', message: String(err?.message || err), retryable: true } }));
+    res.end(JSON.stringify(buildErrorEnvelope(err)));
   }
 }
 

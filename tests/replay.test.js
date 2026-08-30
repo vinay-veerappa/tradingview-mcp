@@ -15,6 +15,7 @@ import {
   requireReplayTrading,
 } from '../src/capabilities.js';
 import { registerReplayTools } from '../src/tools/replay.js';
+import { _resetForTest } from '../src/tools/_registry.js';
 import { getRegisteredHandler } from '../src/cli/router.js';
 import '../src/cli/commands/replay.js';
 
@@ -55,6 +56,9 @@ function mockDeps(responses = {}, sequence) {
 async function callReplayTradeThroughSdk(args, deps) {
   const server = new McpServer({ name: 'replay-test', version: '1.0.0' });
   const client = new Client({ name: 'replay-test-client', version: '1.0.0' });
+  // Ops live in the canonical registry (P2-19) — module-level shared state.
+  // Per-test seam injection re-registers the tool file, so clear first.
+  _resetForTest();
   registerReplayTools(server, deps);
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 

@@ -165,8 +165,19 @@ These tools can return large payloads. Follow these rules to avoid context bloat
 ```
 MCP Client ←→ MCP Server (stdio, profiled 30-tool base) ←→ CDP (localhost:9222) ←→ TradingView Desktop (Electron)
                  │
-                 ├─ subscribe(kind) → AsyncIterable  (CLI JSONL sinks · MCP resource notifications · future SSE)
-                 └─ resources: tradingview://chart/{state,quote}, capabilities
+                 ├─ subscribe(kind) → AsyncIterable  (CLI JSONL sinks · MCP resource notifications · gateway SSE)
+                  └─ resources: tradingview://chart/{state,quote}, capabilities
 ```
 
 Pine graphics path: `study._graphics._primitivesCollection.dwglines.get('lines').get(false)._primitivesDataById`
+
+## Operation registry (P2-19)
+
+Every tool is ONE registry op (`src/tools/_registry.js op()`): name, description,
+input schema, annotations (access class DERIVED from them), handler, transports.
+The MCP table mirrors it (`toolFromRegistry`); the loopback gateway's route table
+is GENERATED from the same set (`httpRoutes()`), and only read ops can carry an
+`http` transport (`{ method, path, adapter(url, _deps) }`) — mutations are
+structurally unbindable until an ADR says otherwise. 102 ops;
+`system_status`/`profile_set` sit outside deliberately (they describe the registry).
+Contract tests: `tests/registry.test.js`.
