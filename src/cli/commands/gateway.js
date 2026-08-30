@@ -11,7 +11,7 @@ register('gateway', {
     const port = opts.port ? Number(opts.port) : GATEWAY_DEFAULT_PORT;
     const { port: bound, close } = await startGateway({ port });
     console.log(`tradingview-mcp gateway listening on http://127.0.0.1:${bound}`);
-    console.log(`routes (registry-derived): /health, /state, /quote, /ohlcv, /values, /snapshot, /panes, /compat, /diagnostics, /pine/analyze, /paper/{status,account,positions,orders}, /stream/{quote|bars|values|panes}`);
+    console.log(`routes (registry-derived): /health, /state, /quote, /ohlcv, /values, /levels, /snapshot, /panes, /compat, /diagnostics, /pine/analyze, /paper/{status,account,positions,orders}, /stream/{quote|bars|values|panes}`);
     console.log('read-only: mutations are MCP/CLI-side by design. Ctrl-C to stop.');
     const shutdown = () => {
       close();

@@ -13,6 +13,8 @@ export function registerSnapshotTools(server) {
     exclude: z.array(z.string()).optional().describe('Sections to skip'),
     preset: z.enum(Object.keys(PRESETS)).optional().describe('Section preset (ignored when include is given)'),
     study_filter: z.string().optional().describe('Substring to filter Pine sections to one indicator (e.g., "Profiler")'),
+    normalize: z.coerce.boolean().optional().describe('Add named_levels[] to pine_labels for recognized tokens (PDH/PDL/OR/settlement/ICH); raw labels preserved (default false)'),
+    categories: z.array(z.enum(['session', 'opening_range', 'settlement', 'ict'])).optional().describe('Restrict normalization to these categories (only with normalize)'),
     compact: z.boolean().optional().describe('Return per-section hashes instead of full payloads'),
   },
     A.READ, async (args, extra) => {
@@ -28,6 +30,9 @@ export function registerSnapshotTools(server) {
           const v = url.searchParams.get(k);
           if (v) opts[k] = v;
         }
+        if (url.searchParams.get('normalize')) opts.normalize = true;
+        const cats = url.searchParams.get('categories');
+        if (cats) opts.categories = cats.split(',').map((s) => s.trim()).filter(Boolean);
         return sessionSnapshot(opts, _deps);
       },
     } });

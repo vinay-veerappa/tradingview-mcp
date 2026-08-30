@@ -125,8 +125,8 @@ function makeCollectors(deps) {
       return { visible_range: s?.visible_range, bars_range: s?.bars_range };
     },
     study_values: () => data.getStudyValues(),
-    pine_lines: ({ study_filter }) => data.getPineLines({ study_filter }),
-    pine_labels: ({ study_filter }) => data.getPineLabels({ study_filter }),
+    pine_lines: ({ study_filter, normalize }) => data.getPineLines({ study_filter, normalize }),
+    pine_labels: ({ study_filter, normalize, categories }) => data.getPineLabels({ study_filter, normalize, categories }),
     pine_tables: ({ study_filter }) => data.getPineTables({ study_filter }),
     pine_boxes: ({ study_filter }) => data.getPineBoxes({ study_filter }),
     alerts: () => alerts.list({}),
@@ -208,6 +208,7 @@ async function collectSections(names, args, deadlineAt, deps) {
 export async function sessionSnapshot(opts = {}, _deps = null) {
   const {
     symbol, timeframe, include, exclude, preset, study_filter, compact,
+    normalize, categories,
   } = opts;
   const R = _resolve(_deps);
   const sectionNames = resolveSections({ include, exclude, preset });
@@ -215,7 +216,7 @@ export async function sessionSnapshot(opts = {}, _deps = null) {
 
   const collectOnce = async () => {
     const identityAtStart = extractIdentity(await R.evaluate(CHART_IDENTITY_JS));
-    const sections = await collectSections(sectionNames, { study_filter }, deadlineAt, _deps);
+    const sections = await collectSections(sectionNames, { study_filter, normalize, categories }, deadlineAt, _deps);
     const identityAtEnd = extractIdentity(await R.evaluate(CHART_IDENTITY_JS));
     return { identityAtStart, identityAtEnd, sections };
   };

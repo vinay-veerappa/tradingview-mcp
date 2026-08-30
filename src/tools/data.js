@@ -71,6 +71,7 @@ export function registerDataTools(server) {
   op('data_get_pine_lines', 'Read horizontal price levels drawn by Pine Script indicators (line.new). Returns deduplicated price levels per study. Use study_filter to target a specific indicator.', {
     study_filter: z.string().optional().describe('Substring to match study name (e.g., "Profiler", "NY Levels"). Omit for all.'),
     verbose: z.coerce.boolean().optional().describe('Return raw line data with IDs, coordinates, colors (default false — returns only unique price levels)'),
+    normalize: z.coerce.boolean().optional().describe('Accepted for symmetry with data_get_pine_labels; horizontal levels are text-free so no token matching is possible (levels are already the normalized form)'),
   },
     A.READ, async ({ study_filter, verbose }) => {
       try { return jsonResult(await core.getPineLines({ study_filter, verbose })); }
@@ -78,14 +79,32 @@ export function registerDataTools(server) {
     });
   toolFromRegistry(server, 'data_get_pine_lines');
 
-  op('data_get_pine_labels', 'Read text labels drawn by Pine Script indicators (label.new). Returns text and price pairs. Use study_filter to target a specific indicator.', {
+  op('data_get_pine_labels', 'Read text labels drawn by Pine Script indicators (label.new). Returns text and price pairs. Use study_filter to target a specific indicator. Set normalize=true for analysis-ready named levels (PDH/PDL/OR/settlement/ICH recognized tokens) alongside the raw labels.', {
     study_filter: z.string().optional().describe('Substring to match study name. Omit for all.'),
     max_labels: z.coerce.number().optional().describe('Max labels per study (default 50). Set higher if you need all.'),
     verbose: z.coerce.boolean().optional().describe('Return raw label data with IDs, colors, positions (default false — returns only text + price)'),
+    normalize: z.coerce.boolean().optional().describe('Add named_levels[] ({name, price, category, confidence, raw_text}) for recognized level tokens; raw labels always preserved (default false)'),
+    categories: z.array(z.enum(['session', 'opening_range', 'settlement', 'ict'])).optional().describe('Restrict normalization to these categories (only with normalize)'),
   },
-    A.READ, async ({ study_filter, max_labels, verbose }) => {
-      try { return jsonResult(await core.getPineLabels({ study_filter, max_labels, verbose })); }
+    A.READ, async ({ study_filter, max_labels, verbose, normalize, categories }) => {
+      try { return jsonResult(await core.getPineLabels({ study_filter, max_labels, verbose, normalize, categories })); }
       catch (err) { return errorResult(err); }
+    }, {
+      http: {
+        path: '/levels',
+        adapter: (url, _deps) => {
+          // P2-10 consumer route: named levels only — no regex re-writing
+          // downstream. Normalization is IMPLIED here (this endpoint exists
+          // for it); ?categories=csv prunes.
+          const cats = url.searchParams.get('categories');
+          return core.getPineLabels({
+            study_filter: url.searchParams.get('study_filter') || undefined,
+            max_labels: url.searchParams.get('max_labels') || undefined,
+            normalize: true,
+            categories: cats ? cats.split(',').map((s) => s.trim()).filter(Boolean) : undefined,
+          }, _deps);
+        },
+      },
     });
   toolFromRegistry(server, 'data_get_pine_labels');
 

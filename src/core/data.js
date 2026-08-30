@@ -4,6 +4,7 @@
 import { evaluate, evaluateAsync, KNOWN_PATHS, safeString } from '../connection.js';
 import { waitForChartReady } from '../wait.js';
 import { createChartContext } from './context.js';
+import { normalizePineLabels } from './named_levels.js';
 
 const MAX_OHLCV_BARS = 500;
 const MAX_TRADES = 20;
@@ -501,9 +502,10 @@ export async function getStudyValues() {
   return { success: true, study_count: data?.length || 0, studies: data || [] };
 }
 
-export async function getPineLines({ study_filter, verbose } = {}) {
+export async function getPineLines({ study_filter, verbose, normalize } = {}, _deps = null) {
+  const ev = _deps?.evaluate || evaluate;
   const filter = study_filter || '';
-  const raw = await evaluate(buildGraphicsJS('dwglines', 'lines', filter));
+  const raw = await ev(buildGraphicsJS('dwglines', 'lines', filter));
   if (!raw || raw.length === 0) return { success: true, study_count: 0, studies: [] };
 
   const studies = raw.map(s => {
@@ -526,9 +528,10 @@ export async function getPineLines({ study_filter, verbose } = {}) {
   return { success: true, study_count: studies.length, studies };
 }
 
-export async function getPineLabels({ study_filter, max_labels, verbose } = {}) {
+export async function getPineLabels({ study_filter, max_labels, verbose, normalize, categories } = {}, _deps = null) {
+  const ev = _deps?.evaluate || evaluate;
   const filter = study_filter || '';
-  const raw = await evaluate(buildGraphicsJS('dwglabels', 'labels', filter));
+  const raw = await ev(buildGraphicsJS('dwglabels', 'labels', filter));
   if (!raw || raw.length === 0) return { success: true, study_count: 0, studies: [] };
 
   const limit = max_labels || 50;
@@ -542,7 +545,11 @@ export async function getPineLabels({ study_filter, max_labels, verbose } = {}) 
       return { text, price, ...(tooltip ? { tooltip } : {}) };
     }).filter(l => l.text || l.price != null);
     if (labels.length > limit) labels = labels.slice(-limit);
-    return { name: s.name, total_labels: s.count, showing: labels.length, labels };
+    const result = { name: s.name, total_labels: s.count, showing: labels.length, labels };
+    // P2-10: optional analysis-ready normalization. Raw `labels` is ALWAYS
+    // preserved untouched — named_levels augments, never replaces.
+    if (normalize) result.named_levels = normalizePineLabels([{ labels }], { categories })[0].named_levels;
+    return result;
   });
   return { success: true, study_count: studies.length, studies };
 }

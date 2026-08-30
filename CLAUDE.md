@@ -181,3 +181,14 @@ is GENERATED from the same set (`httpRoutes()`), and only read ops can carry an
 structurally unbindable until an ADR says otherwise. 102 ops;
 `system_status`/`profile_set` sit outside deliberately (they describe the registry).
 Contract tests: `tests/registry.test.js`.
+
+## Named levels (P2-10)
+
+`src/core/named_levels.js` — pure grammar parser over Pine label text:
+recognized tokens (PDH/PDL/OR/settlement/ICH/FVG/OB, 39 frozen patterns, 4
+categories) → `{name, price, category, confidence, raw_text}`. Exact
+whole-token match only; unrecognized text is NEVER coerced into a level.
+Opt-in via `normalize: true` (+ optional `categories` denylist) on
+`data_get_pine_labels` / `session_snapshot` — raw `labels` always preserved;
+`named_levels` augments. Gateway: `GET /levels` (normalization implied,
+`?categories=csv`). Tests: `tests/named_levels.test.js`.

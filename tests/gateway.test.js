@@ -86,6 +86,21 @@ describe('gateway (loopback HTTP + SSE)', () => {
     } finally { await close(); }
   });
 
+  test('/levels serves normalized named levels (P2-10, offline deps)', async () => {
+    // Route table gains /levels only when data_get_pine_labels carries it —
+    // assert presence through the derived table itself.
+    const { httpRoutes } = await import('../src/tools/_registry.js');
+    assert.ok(httpRoutes().some((r) => r.path === '/levels'), '/levels derived from op');
+    // Offline CDP: the adapter's failing injected evaluate still reaches core
+    // (P2-19 _deps seam) → 502 envelope, same as /state etc.
+    const { port, close } = await boot();
+    try {
+      const r = await get(port, '/levels');
+      assert.equal(r.status, 502);
+      JSON.parse(r.body); // envelope, not a stack trace
+    } finally { await close(); }
+  });
+
   test('mutations are refused: POST → 405 read-only', async () => {
     const { port, close } = await boot();
     try {
