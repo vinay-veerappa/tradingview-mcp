@@ -1,0 +1,585 @@
+diff --git a/package.json b/package.json
+index 761a75ed..473248da 100644
+--- a/package.json
++++ b/package.json
+@@ -12,17 +12,17 @@
+     "./core": "./src/core/index.js"
+   },
+   "scripts": {
+     "start": "node src/server.js",
+     "tv": "node src/cli/index.js",
+     "lint": "eslint src/",
+     "test": "npm run test:unit",
+     "test:e2e": "node --test tests/e2e.test.js",
+-    "test:unit": "node --test tests/pine_analyze.test.js tests/pine_source.test.js tests/cli.test.js tests/connection.test.js tests/layout.test.js tests/capabilities.test.js tests/alerts.test.js tests/input_validation.test.js tests/sanitization.test.js tests/replay.test.js tests/launch.test.js tests/chart_indicator.test.js tests/chart_history.test.js tests/update.test.js tests/paper_discovery.test.js tests/paper.test.js tests/format.test.js tests/context.test.js tests/precondition.test.js tests/snapshot.test.js tests/order_idem.test.js tests/annotations.test.js tests/profiles.test.js tests/reliability.test.js tests/pane_scan.test.js tests/subscribe.test.js tests/resources.test.js",
++    "test:unit": "node --test tests/pine_analyze.test.js tests/pine_source.test.js tests/cli.test.js tests/connection.test.js tests/layout.test.js tests/capabilities.test.js tests/alerts.test.js tests/input_validation.test.js tests/sanitization.test.js tests/replay.test.js tests/launch.test.js tests/chart_indicator.test.js tests/chart_history.test.js tests/update.test.js tests/paper_discovery.test.js tests/paper.test.js tests/format.test.js tests/context.test.js tests/precondition.test.js tests/snapshot.test.js tests/order_idem.test.js tests/annotations.test.js tests/profiles.test.js tests/reliability.test.js tests/pane_scan.test.js tests/subscribe.test.js tests/resources.test.js tests/gateway.test.js",
+     "test:focused": "node --test tests/connection.test.js tests/layout.test.js",
+     "test:layout-canary": "node scripts/layout_canary.js",
+     "test:cli": "node --test tests/cli.test.js",
+     "test:all": "npm run test:unit && npm run test:e2e",
+     "test:verbose": "node --test --test-reporter=spec tests/e2e.test.js tests/pine_analyze.test.js",
+     "test:count": "node --test --test-reporter=spec tests/e2e.test.js 2>&1 | tail -5"
+   },
+   "dependencies": {
+diff --git a/src/cli/commands/gateway.js b/src/cli/commands/gateway.js
+new file mode 100644
+index 00000000..940283e9
+--- /dev/null
++++ b/src/cli/commands/gateway.js
+@@ -0,0 +1,25 @@
++import { register } from '../router.js';
++import { startGateway, GATEWAY_DEFAULT_PORT } from '../../gateway/http.js';
++
++register('gateway', {
++  description: 'Run the loopback HTTP gateway (read surface + SSE streams)',
++  usage: 'tv gateway [--port 9223]',
++  options: {
++    port: { type: 'string', short: 'p', description: `HTTP port (default ${GATEWAY_DEFAULT_PORT})` },
++  },
++  handler: async (opts) => {
++    const port = opts.port ? Number(opts.port) : GATEWAY_DEFAULT_PORT;
++    const { port: bound, close } = await startGateway({ port });
++    console.log(`tradingview-mcp gateway listening on http://127.0.0.1:${bound}`);
++    console.log(`routes: /health /state /quote /snapshot /panes /capabilities /compat /diagnostics /stream/{quote|bars|values|panes}`);
++    console.log('read-only: mutations are MCP/CLI-side by design. Ctrl-C to stop.');
++    const shutdown = () => {
++      close();
++      process.exit(0);
++    };
++    process.on('SIGINT', shutdown);
++    process.on('SIGTERM', shutdown);
++    // never resolves: the gateway process owns the CDP connection while alive
++    await new Promise(() => {});
++  },
++});
+\ No newline at end of file
+diff --git a/src/cli/index.js b/src/cli/index.js
+index 78e897e5..26ddfaeb 100755
+--- a/src/cli/index.js
++++ b/src/cli/index.js
+@@ -20,13 +20,14 @@ import './commands/drawing.js';
+ import './commands/alerts.js';
+ import './commands/watchlist.js';
+ import './commands/layout.js';
+ import './commands/indicator.js';
+ import './commands/ui.js';
+ import './commands/pane.js';
+ import './commands/tab.js';
+ import './commands/stream.js';
++import './commands/gateway.js';
+ import './commands/paper.js';
+ 
+ // Run
+ import { run } from './router.js';
+ await run(process.argv);
+diff --git a/src/core/context.js b/src/core/context.js
+index 7ec944ac..9a83e57c 100644
+--- a/src/core/context.js
++++ b/src/core/context.js
+@@ -79,32 +79,42 @@ export function createChartContext({ evaluate, evaluateAsync, waitForChartReady
+    * Guarantees:
+    * - restore touches ONLY what this transaction actually changed (a request
+    *   that matches the live chart writes nothing);
+    * - restore runs even when op throws (the flip may already have happened);
+    * - the next queued transaction starts only after our restore completes;
+    * - restore failures never mask the op result (reported as restore_error),
+    *   and never mask the op error (swallowed on the failure path).
+    */
+-  async function withChartContext(requested, op, { label = 'unnamed' } = {}) {
++  async function withChartContext(requested, op, { label = 'unnamed', signal } = {}) {
+     return new Promise((resolve) => {
++      // P2-18 slice: caller cancellation. The op races against the signal;
++      // abort rejects the CALLER while the restore path still runs (the flip
++      // may already have happened), so the chart is never left mutated by a
++      // cancelled call. Nothing can kill a page-side evaluate mid-flight —
++      // the op body may finish in the background — so this is caller-visible
++      // cancellation, not op termination.
++      const abortError = new Error(`withChartContext(${label}): aborted by caller`);
++      abortError.name = 'AbortError';
++
+       // Closure state shared by the op body and both restore paths:
+       const txn = { prior: null, appliedSymbol: null, appliedTf: null };
+ 
+       async function restoreIdentity() {
+         if (txn.appliedSymbol == null && txn.appliedTf == null) return;
+         await applyIdentity({
+           symbol: txn.appliedSymbol != null ? txn.prior.symbol : null,
+           timeframe: txn.appliedTf != null ? txn.prior.timeframe : null,
+         });
+       }
+ 
+       const run = _lock.then(async () => {
+         _owner = label;
+         try {
++          if (signal?.aborted) throw abortError;
+           txn.prior = await readIdentity();
+           const requestedIdentity = {
+             symbol: requested?.symbol ?? null,
+             timeframe: requested?.timeframe ?? null,
+           };
+ 
+           // Only mutate what differs; nothing requested => pure read, no flip.
+           const needsSymbol = requestedIdentity.symbol != null &&
+@@ -117,17 +127,30 @@ export function createChartContext({ evaluate, evaluateAsync, waitForChartReady
+             txn.appliedTf = requestedIdentity.timeframe;
+             await applyIdentity({ symbol: null, timeframe: requestedIdentity.timeframe });
+           }
+           if (needsSymbol) {
+             txn.appliedSymbol = requestedIdentity.symbol;
+             await applyIdentity({ symbol: requestedIdentity.symbol, timeframe: null });
+           }
+ 
+-          const result = await op({ prior: txn.prior, applied: flipped });
++          // P2-18: race the op against caller abort. The op body may still
++          // complete in the background (nothing can kill a running evaluate),
++          // but the CALLER sees the rejection and restore runs immediately.
++          const opP = Promise.resolve(op({ prior: txn.prior, applied: flipped }));
++          let result;
++          if (signal) {
++            const abortP = new Promise((_, rej) => {
++              if (signal.aborted) { rej(abortError); return; }
++              signal.addEventListener('abort', () => rej(abortError), { once: true });
++            });
++            result = await Promise.race([opP, abortP]);
++          } else {
++            result = await opP;
++          }
+ 
+           // Post-op identity: detect whether anything else moved the chart
+           // while we held it (agent UI interaction, a second TV window, etc.)
+           let external_change = null;
+           if (flipped) {
+             const after = await readIdentity();
+             const expectedAfter = {
+               symbol: needsSymbol ? requestedIdentity.symbol : txn.prior.symbol,
+diff --git a/src/core/health.js b/src/core/health.js
+index dd3b62d6..771806ed 100644
+--- a/src/core/health.js
++++ b/src/core/health.js
+@@ -38,17 +38,23 @@ export function classifyUpdate(localSha, remoteSha, git) {
+     return { behind: true, ahead: 0 };
+   }
+ }
+ 
+ async function checkForUpdate() {
+   if (_updateCache && (Date.now() - _updateCache.at) < 3600_000) return _updateCache.value;
+   let value = null;
+   try {
+-    const git = (args) => execSync(`git ${args}`, { timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
++    // Anchor to the repo root, never process.cwd(): the MCP client may launch
++    // the server from anywhere, and a foreign cwd made `git rev-parse HEAD`
++    // read ANOTHER checkout's HEAD — a phantom update banner (seen live:
++    // local_commit 5ecf514c from an unrelated state while this repo sat 100+
++    // commits ahead of upstream). Same pattern as update.js REPO_ROOT.
++    const repoRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
++    const git = (args) => execSync(`git ${args}`, { cwd: repoRoot, timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+     const localSha = git('rev-parse HEAD');
+     const remoteUrl = git('config --get remote.origin.url');
+     const m = remoteUrl.match(/github\.com[:/](.+?)(?:\.git)?$/);
+     if (localSha && m) {
+       const repo = m[1];
+       const http = await import('https');
+       const remoteSha = await new Promise((resolve) => {
+         const req = http.get({
+diff --git a/src/core/snapshot.js b/src/core/snapshot.js
+index 5e950859..e2a8c621 100644
+--- a/src/core/snapshot.js
++++ b/src/core/snapshot.js
+@@ -219,17 +219,17 @@ export async function sessionSnapshot(opts = {}, _deps = null) {
+     const identityAtEnd = extractIdentity(await R.evaluate(CHART_IDENTITY_JS));
+     return { identityAtStart, identityAtEnd, sections };
+   };
+ 
+   const _ctx = createChartContext({ evaluate: R.evaluate, evaluateAsync: R.evaluate, waitForChartReady: R.waitForChartReady });
+   const runUnder = (op) => _ctx.withChartContext(
+     { symbol: symbol ?? null, timeframe: timeframe ?? null },
+     op,
+-    { label: 'session_snapshot' },
++    { label: 'session_snapshot', signal: _deps?.signal },
+   );
+ 
+   let outcome = await runUnder(collectOnce);
+ 
+   // Consistency: identity moved mid-collection → retry once under the lock.
+   const moved = (r) =>
+     !sameIdentity(r.identityAtStart.symbol, r.identityAtEnd.symbol, 'symbol') ||
+     !sameIdentity(r.identityAtStart.timeframe, r.identityAtEnd.timeframe, 'timeframe');
+diff --git a/src/gateway/http.js b/src/gateway/http.js
+new file mode 100644
+index 00000000..46be6f4d
+--- /dev/null
++++ b/src/gateway/http.js
+@@ -0,0 +1,158 @@
++/**
++ * Loopback HTTP gateway (gateway plan §2, first slice).
++ *
++ * The read surface exposed over localhost HTTP with JSON responses, plus SSE
++ * streams as sinks over the SAME subscribe() primitive the MCP resources and
++ * CLI use (P2-12). Read-only BY DESIGN: mutations stay MCP/CLI-side until an
++ * ADR authorizes HTTP placement (plan §4.3 exclusion).
++ *
++ * ROUTES is the embryonic registry for this transport: one table declaring
++ * {method, path, handler, stream?}; every binding derives from it. Handlers
++ * are the same core handlers the tool twins call — one source of truth.
++ *
++ * Hard rules:
++ * - Binds 127.0.0.1 only. No auth beyond loopback (plan exclusion).
++ * - No mutations: any non-GET → 405 with the error envelope.
++ * - SSE cancellation on client disconnect (P2-18 slice): the subscriber's
++ *   shouldStop fires on 'close' — no orphaned poll loops.
++ * - Every JSON response is the stable envelope ({success, ...} or
++ *   {success:false, error:{code, message, retryable, ...}}).
++ */
++import http from 'http';
++import { getState } from '../core/chart.js';
++import { getQuote } from '../core/data.js';
++import { sessionSnapshot } from '../core/snapshot.js';
++import { paneScan } from '../core/pane_scan.js';
++import { compatibilityReport, diagnostics } from '../core/reliability.js';
++import { subscribe, SUBSCRIPTION_KINDS } from '../core/subscribe.js';
++import { getActiveProfile } from '../tools/_profiles.js';
++import { listCapabilities } from '../capabilities.js';
++
++export const GATEWAY_DEFAULT_PORT = 9223;
++
++const ROUTES = [
++  { method: 'GET', path: '/state', handler: (_req, _url, _deps) => getState({ _deps }) },
++  { method: 'GET', path: '/quote', handler: (_req, _url, _deps) => getQuote({}, _deps) },
++  { method: 'GET', path: '/snapshot', handler: (_req, url, _deps) => {
++    const opts = {};
++    if (url.searchParams.get('preset')) opts.preset = url.searchParams.get('preset');
++    if (url.searchParams.get('symbol')) opts.symbol = url.searchParams.get('symbol');
++    if (url.searchParams.get('timeframe')) opts.timeframe = url.searchParams.get('timeframe');
++    return sessionSnapshot(opts, _deps);
++  } },
++  { method: 'GET', path: '/panes', handler: (_req, _url, _deps) => paneScan(_deps) },
++  { method: 'GET', path: '/capabilities', handler: () => ({
++      success: true,
++      profile: getActiveProfile(),
++      capabilities: listCapabilities(),
++    }) },
++  { method: 'GET', path: '/compat', handler: (_req, _url, _deps) => compatibilityReport(_deps) },
++  { method: 'GET', path: '/diagnostics', handler: (_req, _url, _deps) => diagnostics(_deps) },
++];
++
++// SSE route: /stream/<kind> — subscribe() sink with disconnect cancellation.
++const STREAM_KINDS = new Set(['quote', 'bars', 'values', 'panes']);
++
++function sseHead(res) {
++  res.writeHead(200, {
++    'Content-Type': 'text/event-stream',
++    'Cache-Control': 'no-cache',
++    Connection: 'keep-alive',
++  });
++  res.write(':ok\n\n');
++}
++
++async function handleStream(req, res, kind, url, _deps = null) {
++  if (!STREAM_KINDS.has(kind)) {
++    res.writeHead(404, { 'Content-Type': 'application/json' });
++    res.end(JSON.stringify({ success: false, error: { code: 'http_not_found', message: `unknown stream kind '${kind}' (known: ${[...STREAM_KINDS].join(', ')})`, retryable: false } }));
++    return;
++  }
++  sseHead(res);
++  const interval = url.searchParams.get('interval') ? Number(url.searchParams.get('interval')) : undefined;
++  const disconnected = { stop: false };
++  // P2-18 slice: disconnect cancels the poll loop — BOTH ends (req for client
++  // abort, res for server-side finish), so no orphaned subscriber survives.
++  req.on('close', () => { disconnected.stop = true; });
++  res.on('close', () => { disconnected.stop = true; });
++  try {
++    for await (const event of subscribe(kind, { interval, _deps, shouldStop: () => disconnected.stop })) {
++      if (event.kind === 'connection') {
++        res.write(`event: connection\ndata: ${JSON.stringify({ status: event.status })}\n\n`);
++      } else {
++        res.write(`data: ${JSON.stringify(event)}\n\n`);
++      }
++      if (disconnected.stop) break;
++    }
++  } catch {
++    // client gone mid-write or subscriber error — nothing to do; loop already stopped
++  }
++  try { res.end(); } catch { /* socket already closed */ }
++}
++
++export async function handleRequest(req, res, _deps = null) {
++  const url = new URL(req.url, 'http://127.0.0.1');
++  const pathMatch = url.pathname.match(/^\/stream\/([a-z]+)$/);
++
++  if (pathMatch) {
++    await handleStream(req, res, pathMatch[1], url, _deps);
++    return;
++  }
++
++  if (!ROUTES.some((r) => r.path === url.pathname) && url.pathname !== '/health') {
++    res.writeHead(404, { 'Content-Type': 'application/json' });
++    res.end(JSON.stringify({ success: false, error: { code: 'http_not_found', message: `no route ${url.pathname}`, retryable: false } }));
++    return;
++  }
++  if (req.method !== 'GET') {
++    // Mutations over HTTP are excluded by plan §4.3 until an ADR exists.
++    res.writeHead(405, { 'Content-Type': 'application/json', Allow: 'GET' });
++    res.end(JSON.stringify({ success: false, error: { code: 'http_method_not_allowed', message: 'gateway is read-only (mutations are MCP/CLI-only by design)', retryable: false } }));
++    return;
++  }
++
++  if (url.pathname === '/health') {
++    res.writeHead(200, { 'Content-Type': 'application/json' });
++    res.end(JSON.stringify({ success: true, gateway: 'up', profile: getActiveProfile() }));
++    return;
++  }
++
++  const route = ROUTES.find((r) => r.path === url.pathname);
++  try {
++    const data = await route.handler(req, url, _deps);
++    res.writeHead(200, { 'Content-Type': 'application/json' });
++    res.end(JSON.stringify(data ?? { success: true }));
++  } catch (err) {
++    res.writeHead(502, { 'Content-Type': 'application/json' });
++    res.end(JSON.stringify({ success: false, error: { code: 'upstream_failed', message: String(err?.message || err), retryable: true } }));
++  }
++}
++
++/**
++ * Start the gateway. Returns { port, server, close } — close() terminates all
++ * SSE subscribers (shouldStop) and the listener.
++ */
++export function startGateway({ port = GATEWAY_DEFAULT_PORT, host = '127.0.0.1', _deps = null } = {}) {
++  // _deps threads into every CDP-backed handler + subscribe (house seam):
++  // offline tests inject a failing evaluate so no real connection is made.
++  const server = http.createServer((req, res) => handleRequest(req, res, _deps));
++  const connections = new Set();
++  server.on('connection', (conn) => {
++    connections.add(conn);
++    conn.on('close', () => connections.delete(conn));
++  });
++  const stopAll = () => { for (const c of connections) try { c.destroy(); } catch { /* done */ } };
++  const closeServer = () => {
++    stopAll(); // kill lingering SSE sockets so server.close() completes
++    try { server.close(); } catch { /* already closed */ }
++  };
++  return new Promise((resolve, reject) => {
++    server.once('error', reject);
++    server.listen(port, host, () => resolve({
++      // Report the ACTUAL bound port — callers pass 0 for an ephemeral choice.
++      port: server.address().port,
++      server,
++      close: closeServer,
++    }));
++  });
++}
+\ No newline at end of file
+diff --git a/src/tools/snapshot.js b/src/tools/snapshot.js
+index 6618c951..80df871f 100644
+--- a/src/tools/snapshot.js
++++ b/src/tools/snapshot.js
+@@ -8,18 +8,20 @@ export function registerSnapshotTools(server) {
+     symbol: z.string().optional().describe('Temporarily switch the chart to this symbol for the snapshot (restored after)'),
+     timeframe: z.string().optional().describe('Temporarily apply this timeframe for the snapshot (restored after)'),
+     include: z.array(z.string()).optional().describe('Section list (quote, ohlcv_summary, chart_state, visible_range, study_values, pine_lines, pine_labels, pine_tables, pine_boxes, alerts, strategy_summary)'),
+     exclude: z.array(z.string()).optional().describe('Sections to skip'),
+     preset: z.enum(Object.keys(PRESETS)).optional().describe('Section preset (ignored when include is given)'),
+     study_filter: z.string().optional().describe('Substring to filter Pine sections to one indicator (e.g., "Profiler")'),
+     compact: z.boolean().optional().describe('Return per-section hashes instead of full payloads'),
+   },
+-    A.READ, async (args) => {
+-    try { return jsonResult(await sessionSnapshot(args)); }
++    A.READ, async (args, extra) => {
++    // P2-18: MCP request cancellation — extra.signal (SDK RequestHandlerExtra)
++    // flows into withChartContext; a cancelled call unwinds any chart flip.
++    try { return jsonResult(await sessionSnapshot(args, { signal: extra?.signal })); }
+     catch (err) { return errorResult(err); }
+   });
+ 
+   server.tool('chart_changes', 'Diff the live chart against a prior session_snapshot without re-reading everything: pass since = prior snapshot_hash → returns changed/unchanged section lists plus a new snapshot hash.', {
+     // z.object().passthrough(), NOT z.record(): SDK zod-compat cannot convert
+     // record shapes (verified: tools/list throws "_zod of undefined").
+     since: z.object({}).passthrough().describe('section_hashes map from a prior session_snapshot (or the prior snapshot object itself)'),
+     include: z.array(z.string()).optional().describe('Restrict both collection and diff to these sections'),
+diff --git a/tests/context.test.js b/tests/context.test.js
+index a93e4f4a..b5b0dc51 100644
+--- a/tests/context.test.js
++++ b/tests/context.test.js
+@@ -115,16 +115,43 @@ describe('withChartContext: transactional behavior', () => {
+     await assert.rejects(
+       () => ctx.withChartContext({ symbol: 'NASDAQ:AAPL' }, async () => { throw new Error('boom'); }),
+       /boom/
+     );
+     assert.equal(d.state.symbol, 'CME_MINI:NQ1!', 'restored after failure');
+     // caller error is the op error, not a restore artifact
+   });
+ 
++  test('P2-18: abort mid-op rejects the caller and still restores', async () => {
++    const d = mockDeps({ symbol: 'CME_MINI:NQ1!', timeframe: '5' });
++    const ctx = createChartContext(d);
++    const ctl = new AbortController();
++    let opSettled = false;
++    const p = ctx.withChartContext({ symbol: 'NASDAQ:AAPL' }, async () => {
++      await new Promise((r) => setTimeout(r, 50));
++      opSettled = true;
++      return { v: 1 };
++    }, { label: 'cxl', signal: ctl.signal });
++    setTimeout(() => ctl.abort(), 10);
++    await assert.rejects(() => p, /aborted by caller/);
++    assert.equal(d.state.symbol, 'CME_MINI:NQ1!', 'chart restored despite abort');
++  });
++
++  test('P2-18: pre-aborted signal throws before touching the chart', async () => {
++    const d = mockDeps();
++    const ctx = createChartContext(d);
++    const ctl = new AbortController();
++    ctl.abort();
++    await assert.rejects(
++      () => ctx.withChartContext({ symbol: 'NASDAQ:AAPL' }, async () => ({ v: 1 }), { signal: ctl.signal }),
++      /aborted by caller/
++    );
++    assert.equal(d.log.filter((l) => l.startsWith('write')).length, 0, 'no chart writes at all');
++  });
++
+   test('serialization: overlapping contexts run strictly one after another', async () => {
+     const d = mockDeps();
+     const ctx = createChartContext(d);
+     const events = [];
+     const a = ctx.withChartContext({ symbol: 'MSFT' }, async () => {
+       events.push('a-start');
+       await new Promise(r => setTimeout(r, 30));
+       events.push('a-end');
+diff --git a/tests/gateway.test.js b/tests/gateway.test.js
+new file mode 100644
+index 00000000..78ecdb73
+--- /dev/null
++++ b/tests/gateway.test.js
+@@ -0,0 +1,132 @@
++import { test, describe } from 'node:test';
++import assert from 'node:assert/strict';
++import http from 'node:http';
++import { startGateway, handleRequest, GATEWAY_DEFAULT_PORT } from '../src/gateway/http.js';
++import { SUBSCRIPTION_KINDS } from '../src/core/subscribe.js';
++
++// Ephemeral-port gateway. Route handlers touch CDP unless we inject _deps —
++// and a REAL CDP client is a pooled socket that keeps the test process alive.
++// The offline seam (house pattern since step 2): a failing evaluate means
++// every CDP-backed route deterministically throws → 502, and SSE emits
++// connection-lost — without ever opening a socket.
++const OFFLINE_DEPS = {
++  evaluate: async () => { throw new Error('ECONNREFUSED EPIPE test-injected'); },
++  sleep: (ms) => new Promise((r) => setTimeout(r, Math.min(ms, 20))),
++};
++async function boot() {
++  const { port, close } = await startGateway({ port: 0, _deps: OFFLINE_DEPS });
++  return { port, close };
++}
++
++function get(port, path, method = 'GET') {
++  return new Promise((resolve, reject) => {
++    const req = http.request({ host: '127.0.0.1', port, path, method }, (res) => {
++      let body = '';
++      res.on('data', (c) => (body += c));
++      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body }));
++    });
++    req.on('error', reject);
++    req.end();
++  });
++}
++
++function getSse(port, path, ms) {
++  // fetch + AbortController — the same pattern proven to exit cleanly
++  // (http.get + req.destroy leaves an error-time race that hangs --test).
++  return (async () => {
++    const controller = new AbortController();
++    setTimeout(() => controller.abort(), ms);
++    const controller2 = controller;
++    try {
++      const res = await fetch(`http://127.0.0.1:${port}${path}`, { signal: controller2.signal });
++      const reader = res.body.getReader();
++      const dec = new TextDecoder();
++      let body = '';
++      try {
++        for (;;) {
++          const { done, value } = await reader.read();
++          if (done) break;
++          body += dec.decode(value, { stream: true });
++        }
++      } catch { /* aborted */ }
++      return { status: res.status, headers: Object.fromEntries(res.headers), body };
++    } catch (e) {
++      return { status: 0, headers: {}, body: '', err: String(e) };
++    }
++  })();
++}
++
++describe('gateway (loopback HTTP + SSE)', () => {
++  test('health responds with envelope', async () => {
++    const { port, close } = await boot();
++    try {
++      const r = await get(port, '/health');
++      assert.equal(r.status, 200);
++      const body = JSON.parse(r.body);
++      assert.equal(body.success, true);
++      assert.equal(body.gateway, 'up');
++    } finally { await close(); }
++  });
++
++  test('routes 404 cleanly with envelope', async () => {
++    const { port, close } = await boot();
++    try {
++      const r = await get(port, '/nope');
++      assert.equal(r.status, 404);
++      const body = JSON.parse(r.body);
++      assert.equal(body.success, false);
++      assert.equal(body.error.code, 'http_not_found');
++    } finally { await close(); }
++  });
++
++  test('mutations are refused: POST → 405 read-only', async () => {
++    const { port, close } = await boot();
++    try {
++      const r = await get(port, '/state', 'POST');
++      assert.equal(r.status, 405);
++      const body = JSON.parse(r.body);
++      assert.equal(body.error.code, 'http_method_not_allowed');
++      assert.ok(/read-only/.test(body.error.message));
++    } finally { await close(); }
++  });
++
++  test('SSE stream serves event-stream and emits connection events offline', async () => {
++    const { port, close } = await boot();
++    try {
++      const r = await getSse(port, '/stream/quote?interval=40', 600);
++      assert.equal(r.status, 200);
++      assert.match(r.headers['content-type'] ?? '', /text\/event-stream/);
++      assert.ok(r.body.startsWith(':ok'), 'SSE prelude present');
++      assert.ok(r.body.includes('event: connection'), 'connection event emitted');
++      assert.ok(r.body.includes('"status":"lost"'), 'lost status present');
++    } finally { await close(); }
++  });
++
++  test('unknown stream kind → 404', async () => {
++    const { port, close } = await boot();
++    try {
++      const r = await get(port, '/stream/badkind');
++      assert.equal(r.status, 404);
++      assert.equal(JSON.parse(r.body).error.code, 'http_not_found');
++    } finally { await close(); }
++  });
++
++  test('upstream failure yields retryable envelope (route handler throws)', async () => {
++    const { port, close } = await boot();
++    try {
++      // Offline deps: /state → getState throws → 502 upstream_failed.
++      const r = await get(port, '/state');
++      assert.equal(r.status, 502);
++      const body = JSON.parse(r.body);
++      assert.equal(body.success, false);
++      assert.equal(body.error.code, 'upstream_failed');
++      assert.equal(body.error.retryable, true);
++      assert.ok(/ECONNREFUSED EPIPE/.test(body.error.message), 'real error message carried through');
++    } finally { await close(); }
++  });
++
++  test('default port constant sane', () => {
++    assert.equal(typeof GATEWAY_DEFAULT_PORT, 'number');
++    assert.equal(SUBSCRIPTION_KINDS.length, 4);
++  });
++});
+\ No newline at end of file

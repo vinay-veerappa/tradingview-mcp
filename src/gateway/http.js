@@ -68,8 +68,20 @@ async function handleStream(req, res, kind, url, _deps = null) {
     res.end(JSON.stringify({ success: false, error: { code: 'http_not_found', message: `unknown stream kind '${kind}' (known: ${[...STREAM_KINDS].join(', ')})`, retryable: false } }));
     return;
   }
+  // Panel finding (r1): validate interval BEFORE the SSE handshake —
+  // NaN falls back safely (falsy), but NEGATIVE values are truthy and feed
+  // setTimeout a negative delay (hot loop). Bad values → 400 with envelope.
+  let interval;
+  const rawInterval = url.searchParams.get('interval');
+  if (rawInterval != null) {
+    interval = Number(rawInterval);
+    if (!Number.isFinite(interval) || interval < 50) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: { code: 'http_bad_request', message: 'interval must be a number >= 50 (ms)', retryable: false } }));
+      return;
+    }
+  }
   sseHead(res);
-  const interval = url.searchParams.get('interval') ? Number(url.searchParams.get('interval')) : undefined;
   const disconnected = { stop: false };
   // P2-18 slice: disconnect cancels the poll loop — BOTH ends (req for client
   // abort, res for server-side finish), so no orphaned subscriber survives.
@@ -84,8 +96,12 @@ async function handleStream(req, res, kind, url, _deps = null) {
       }
       if (disconnected.stop) break;
     }
-  } catch {
-    // client gone mid-write or subscriber error — nothing to do; loop already stopped
+  } catch (err) {
+    // Panel finding (r1): a subscriber exception must reach the client as an
+    // error event, not a silently truncated stream.
+    try {
+      res.write(`event: error\ndata: ${JSON.stringify({ success: false, error: { code: 'upstream_failed', message: String(err?.message || err), retryable: true } })}\n\n`);
+    } catch { /* socket gone */ }
   }
   try { res.end(); } catch { /* socket already closed */ }
 }
@@ -94,20 +110,26 @@ export async function handleRequest(req, res, _deps = null) {
   const url = new URL(req.url, 'http://127.0.0.1');
   const pathMatch = url.pathname.match(/^\/stream\/([a-z]+)$/);
 
-  if (pathMatch) {
-    await handleStream(req, res, pathMatch[1], url, _deps);
+  // Panel finding (r1): ONE guard that keeps the 404-vs-405 distinction —
+  // known routes (incl. /stream/<kind>) get 405 on non-GET; unknown paths 404
+  // regardless of method.
+  const knownPath = Boolean(pathMatch) || ROUTES.some((r) => r.path === url.pathname) || url.pathname === '/health';
+  if (req.method !== 'GET') {
+    // Mutations over HTTP are excluded by plan §4.3 until an ADR exists.
+    res.writeHead(knownPath ? 405 : 404, { 'Content-Type': 'application/json', Allow: knownPath ? 'GET' : undefined });
+    res.end(JSON.stringify(knownPath
+      ? { success: false, error: { code: 'http_method_not_allowed', message: 'gateway is read-only (mutations are MCP/CLI-only by design)', retryable: false } }
+      : { success: false, error: { code: 'http_not_found', message: `no route ${url.pathname}`, retryable: false } }));
     return;
   }
-
-  if (!ROUTES.some((r) => r.path === url.pathname) && url.pathname !== '/health') {
+  if (!knownPath) {
     res.writeHead(404, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ success: false, error: { code: 'http_not_found', message: `no route ${url.pathname}`, retryable: false } }));
     return;
   }
-  if (req.method !== 'GET') {
-    // Mutations over HTTP are excluded by plan §4.3 until an ADR exists.
-    res.writeHead(405, { 'Content-Type': 'application/json', Allow: 'GET' });
-    res.end(JSON.stringify({ success: false, error: { code: 'http_method_not_allowed', message: 'gateway is read-only (mutations are MCP/CLI-only by design)', retryable: false } }));
+
+  if (pathMatch) {
+    await handleStream(req, res, pathMatch[1], url, _deps);
     return;
   }
 

@@ -87,13 +87,28 @@ describe('gateway (loopback HTTP + SSE)', () => {
       const body = JSON.parse(r.body);
       assert.equal(body.error.code, 'http_method_not_allowed');
       assert.ok(/read-only/.test(body.error.message));
+      // Panel finding (r1): stream routes are known paths — POST must 405, not 404.
+      const rs = await get(port, '/stream/quote', 'POST');
+      assert.equal(rs.status, 405);
+      assert.equal(JSON.parse(rs.body).error.code, 'http_method_not_allowed');
+    } finally { await close(); }
+  });
+
+  test('interval validation: negative/non-numeric → 400 (panel r1: negative = hot-loop)', async () => {
+    const { port, close } = await boot();
+    try {
+      for (const q of ['?interval=-5', '?interval=abc']) {
+        const r = await get(port, `/stream/quote${q}`);
+        assert.equal(r.status, 400, q);
+        assert.equal(JSON.parse(r.body).error.code, 'http_bad_request', q);
+      }
     } finally { await close(); }
   });
 
   test('SSE stream serves event-stream and emits connection events offline', async () => {
     const { port, close } = await boot();
     try {
-      const r = await getSse(port, '/stream/quote?interval=40', 600);
+      const r = await getSse(port, '/stream/quote?interval=100', 600);
       assert.equal(r.status, 200);
       assert.match(r.headers['content-type'] ?? '', /text\/event-stream/);
       assert.ok(r.body.startsWith(':ok'), 'SSE prelude present');

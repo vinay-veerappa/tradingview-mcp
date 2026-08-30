@@ -147,6 +147,56 @@ describe('withChartContext: transactional behavior', () => {
     assert.equal(d.log.filter((l) => l.startsWith('write')).length, 0, 'no chart writes at all');
   });
 
+  test('P2-18 (panel r1): pre-aborted rejects IMMEDIATELY, even while the lock is held', async () => {
+    const d = mockDeps();
+    const ctx = createChartContext(d);
+    // Op A holds the lock until released.
+    let releaseA = null;
+    const blocker = ctx.withChartContext({ symbol: 'MSFT' }, () => new Promise((r) => { releaseA = r; }), { label: 'A' });
+    await new Promise((r) => setTimeout(r, 5)); // let A acquire the lock
+    const ctlB = new AbortController();
+    ctlB.abort();
+    const t0 = Date.now();
+    await assert.rejects(
+      () => ctx.withChartContext({ symbol: 'TSLA' }, async () => ({ v: 1 }), { label: 'B', signal: ctlB.signal }),
+      /aborted by caller/
+    );
+    assert.ok(Date.now() - t0 < 50, `rejected promptly (${Date.now() - t0}ms), not queued behind A`);
+    releaseA();
+    await blocker;
+  });
+
+  test('P2-18 (panel r1): no listener leak on a reused session signal', async () => {
+    const d = mockDeps();
+    const ctx = createChartContext(d);
+    const ctl = new AbortController();
+    // Session-level signal reused across many successful transactions.
+    const before = ctl.signal.eventNames ? undefined : null;
+    for (let i = 0; i < 20; i++) {
+      await ctx.withChartContext({ symbol: 'MSFT' }, async () => ({ i }), { label: 'reuse', signal: ctl.signal });
+    }
+    // Node exposes listener count on raw EventEmitter; AbortSignal wraps it.
+    const listeners = (ctl.signal._events ? Object.values(ctl.signal._events).flat().length : 0)
+      ?? before ?? 0;
+    assert.ok(listeners === 0, `expected 0 remaining abort listeners, got ${listeners}`);
+  });
+
+  test('P2-18 (panel r1): op that rejects AFTER abort wins does not crash the process', async () => {
+    const d = mockDeps();
+    const ctx = createChartContext(d);
+    const ctl = new AbortController();
+    const p = ctx.withChartContext({ symbol: 'MSFT' }, async () => {
+      await new Promise((r) => setTimeout(r, 40));
+      throw new Error('late page-side failure');
+    }, { label: 'latereject', signal: ctl.signal });
+    setTimeout(() => ctl.abort(), 5);
+    await assert.rejects(() => p, /aborted by caller/);
+    // Give the background op time to reject — an unhandledRejection here
+    // crashes the test runner under Node 15+ semantics.
+    await new Promise((r) => setTimeout(r, 120));
+    assert.equal(d.state.symbol, 'CME_MINI:NQ1!', 'chart restored');
+  });
+
   test('serialization: overlapping contexts run strictly one after another', async () => {
     const d = mockDeps();
     const ctx = createChartContext(d);

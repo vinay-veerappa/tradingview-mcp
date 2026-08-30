@@ -85,6 +85,13 @@ export function createChartContext({ evaluate, evaluateAsync, waitForChartReady 
    *   and never mask the op error (swallowed on the failure path).
    */
   async function withChartContext(requested, op, { label = 'unnamed', signal } = {}) {
+    // Panel finding (r1): a pre-aborted signal must reject the caller NOW —
+    // queuing it behind a held lock would delay rejection by the whole op.
+    if (signal?.aborted) {
+      const abortError = new Error(`withChartContext(${label}): aborted by caller`);
+      abortError.name = 'AbortError';
+      return Promise.reject(abortError);
+    }
     return new Promise((resolve) => {
       // P2-18 slice: caller cancellation. The op races against the signal;
       // abort rejects the CALLER while the restore path still runs (the flip
@@ -137,12 +144,27 @@ export function createChartContext({ evaluate, evaluateAsync, waitForChartReady 
           // but the CALLER sees the rejection and restore runs immediately.
           const opP = Promise.resolve(op({ prior: txn.prior, applied: flipped }));
           let result;
+          let onAbort = null; // hoisted: the finally below must always see it
           if (signal) {
-            const abortP = new Promise((_, rej) => {
-              if (signal.aborted) { rej(abortError); return; }
-              signal.addEventListener('abort', () => rej(abortError), { once: true });
-            });
-            result = await Promise.race([opP, abortP]);
+            // Panel finding (r1): the abort listener must not outlive this
+            // transaction — callers reuse session-level signals, and one
+            // leaked listener per call is a real leak (MaxListeners after 11).
+            let settleAbort = null;
+            const abortP = new Promise((_, rej) => { settleAbort = () => rej(abortError); });
+            if (signal.aborted) settleAbort();
+            else {
+              onAbort = () => settleAbort();
+              signal.addEventListener('abort', onAbort, { once: true });
+            }
+            try {
+              result = await Promise.race([opP, abortP]);
+            } finally {
+              if (onAbort) signal.removeEventListener('abort', onAbort);
+              // Panel finding (r1): after an abort wins, opP still settles —
+              // if the op later REJECTS, that is an unhandled rejection that
+              // kills the process. The caller already holds the AbortError.
+              opP.catch(() => {});
+            }
           } else {
             result = await opP;
           }
