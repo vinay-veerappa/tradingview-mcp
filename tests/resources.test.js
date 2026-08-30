@@ -73,4 +73,34 @@ describe('live resources (P2-11/P2-12)', () => {
     handle.stop(); // terminate the notifier loop explicitly
     await Promise.allSettled([server.close?.(), client.close?.()]);
   });
+
+  test('notifier sends resource-updated when quote content changes', async () => {
+    const server = new McpServer({ name: 't', version: '0' });
+    const client = new Client({ name: 'c', version: '0' });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    // Fake market: mutating price each poll (~ deterministic emission) at
+    // 20ms effective interval; evaluate returns the last value of the
+    // quote FETCH_JS — notifier dedupes on the whole payload, so a fresh
+    // close forces a change event.
+    let seq = 0;
+    const handle = registerLiveResources(server, {
+      intervalMs: 20,
+      _deps: {
+        evaluate: async () => ({ close: 7724 + (seq++) * 0.25, symbol: 'TEST', time: Date.now() }),
+        sleep: (ms) => new Promise((r) => setTimeout(r, Math.min(ms, 20))),
+      },
+    });
+    const uris = [];
+    client.fallbackNotificationHandler = (n) => {
+      if (n?.method === 'notifications/resources/updated') uris.push(n.params.uri);
+    };
+    await Promise.all([server.connect(a), client.connect(b)]);
+    await new Promise((r) => setTimeout(r, 200));
+    assert.ok(uris.includes('tradingview://chart/quote'), `expected quote notifications, got ${uris.join(', ')}`);
+    handle.stop();
+    const count = uris.length;
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(uris.length, count, 'notifications stop after handle.stop()');
+    await Promise.allSettled([server.close?.(), client.close?.()]);
+  });
 });

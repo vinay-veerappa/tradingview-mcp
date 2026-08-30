@@ -70,6 +70,7 @@ export function registerLiveResources(server, { intervalMs = 500, _deps = null }
   // Shared notifier loop (one per server). Terminates on server close (the
   // SDK Server emits 'close') or via the returned stop() — a dead CDP means
   // no notifications, never a crashed server or a hot loop.
+  const notify = (uri) => { server.server.sendResourceUpdated({ uri }); };
   let disposed = false;
   try { server.server.on?.('close', () => { disposed = true; }); } catch { /* no emitter */ }
   (async () => {
@@ -80,8 +81,8 @@ export function registerLiveResources(server, { intervalMs = 500, _deps = null }
         _deps,
         shouldStop: () => disposed,
       })) {
-        if (event.kind === 'connection') notify(server, 'tradingview://chart/state');
-        else notify(server, 'tradingview://chart/quote');
+        if (event.kind === 'connection') notify('tradingview://chart/state');
+        else notify('tradingview://chart/quote');
       }
     } catch { /* shutting down */ }
   })();
