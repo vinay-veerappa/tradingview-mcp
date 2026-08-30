@@ -81,9 +81,11 @@ CONTEXT MANAGEMENT:
   }
 );
 
-// Register all tool groups
+// Register all tool groups + resources (P2-11/P2-12)
 import { registerAll } from './tools/index.js';
 import { registerSystemTools, applyProfile, getActiveProfile } from './tools/_profiles.js';
+import { registerLiveResources } from './resources/live.js';
+
 registerSystemTools(server); // always visible (system_status, profile_set)
 registerAll(server);
 
@@ -102,4 +104,9 @@ process.stderr.write('   Replay is not a guarantee of demo/paper isolation; disc
 
 // Start stdio transport
 const transport = new StdioServerTransport();
+
+// Resources + live notifications (P2-11/P2-12): read-only observables with a
+// shared quote notifier feeding sendResourceUpdated. Tools stay the action
+// surface; resources the observation surface.
+registerLiveResources(server, {});
 await server.connect(transport);
