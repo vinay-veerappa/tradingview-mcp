@@ -1,0 +1,18 @@
+{
+  "mode": "review",
+  "range": "801567aa..HEAD",
+  "files": [
+    "src/core/context.js",
+    "src/gateway/http.js",
+    "tests/context.test.js",
+    "tests/gateway.test.js"
+  ],
+  "panel_verdict": "REVISE",
+  "panel_valid": true,
+  "findings_total": 19,
+  "findings_blocking": 9,
+  "arbiter": "(not run)",
+  "arbiter_upheld": 0,
+  "artifacts": "logs\\agent_loop\\review-801567aa_HEAD",
+  "secs": 25.7
+}

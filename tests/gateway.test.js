@@ -94,6 +94,20 @@ describe('gateway (loopback HTTP + SSE)', () => {
     } finally { await close(); }
   });
 
+  test('interval boundary (panel r2): 49→400, 50→ok, empty→400', async () => {
+    const { port, close } = await boot();
+    try {
+      const bad49 = await get(port, '/stream/quote?interval=49');
+      assert.equal(bad49.status, 400, '49 is below the floor');
+      const ok50 = await getSse(port, '/stream/quote?interval=50', 400);
+      assert.equal(ok50.status, 200, '50 is the floor — accepted');
+      const badEmpty = await get(port, '/stream/quote?interval=');
+      assert.equal(badEmpty.status, 400, 'empty string → Number("")=0 → below floor');
+      const badZero = await get(port, '/stream/quote?interval=0');
+      assert.equal(badZero.status, 400, '0 was a hot loop pre-r1; deliberately 400 now');
+    } finally { await close(); }
+  });
+
   test('interval validation: negative/non-numeric → 400 (panel r1: negative = hot-loop)', async () => {
     const { port, close } = await boot();
     try {

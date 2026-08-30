@@ -112,11 +112,13 @@ export async function handleRequest(req, res, _deps = null) {
 
   // Panel finding (r1): ONE guard that keeps the 404-vs-405 distinction —
   // known routes (incl. /stream/<kind>) get 405 on non-GET; unknown paths 404
-  // regardless of method.
+  // regardless of method. Allow header only when it names a usable method.
   const knownPath = Boolean(pathMatch) || ROUTES.some((r) => r.path === url.pathname) || url.pathname === '/health';
   if (req.method !== 'GET') {
     // Mutations over HTTP are excluded by plan §4.3 until an ADR exists.
-    res.writeHead(knownPath ? 405 : 404, { 'Content-Type': 'application/json', Allow: knownPath ? 'GET' : undefined });
+    // (Panel r2: omit Allow rather than sending Allow: undefined.)
+    const headers = { 'Content-Type': 'application/json', ...(knownPath && { Allow: 'GET' }) };
+    res.writeHead(knownPath ? 405 : 404, headers);
     res.end(JSON.stringify(knownPath
       ? { success: false, error: { code: 'http_method_not_allowed', message: 'gateway is read-only (mutations are MCP/CLI-only by design)', retryable: false } }
       : { success: false, error: { code: 'http_not_found', message: `no route ${url.pathname}`, retryable: false } }));

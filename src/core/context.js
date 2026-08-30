@@ -87,9 +87,11 @@ export function createChartContext({ evaluate, evaluateAsync, waitForChartReady 
   async function withChartContext(requested, op, { label = 'unnamed', signal } = {}) {
     // Panel finding (r1): a pre-aborted signal must reject the caller NOW —
     // queuing it behind a held lock would delay rejection by the whole op.
+    // (No chart interaction has happened, so no restore is owed.)
     if (signal?.aborted) {
       const abortError = new Error(`withChartContext(${label}): aborted by caller`);
       abortError.name = 'AbortError';
+      abortError.code = 'ABORT_ERR'; // standard Node abort-detection pattern
       return Promise.reject(abortError);
     }
     return new Promise((resolve) => {
@@ -101,6 +103,7 @@ export function createChartContext({ evaluate, evaluateAsync, waitForChartReady 
       // cancellation, not op termination.
       const abortError = new Error(`withChartContext(${label}): aborted by caller`);
       abortError.name = 'AbortError';
+      abortError.code = 'ABORT_ERR';
 
       // Closure state shared by the op body and both restore paths:
       const txn = { prior: null, appliedSymbol: null, appliedTf: null };

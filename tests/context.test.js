@@ -1,5 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import { getEventListeners } from 'node:events';
 import { createChartContext, runWithContext } from '../src/core/context.js';
 import {
   CHART_IDENTITY_JS,
@@ -171,14 +172,14 @@ describe('withChartContext: transactional behavior', () => {
     const ctx = createChartContext(d);
     const ctl = new AbortController();
     // Session-level signal reused across many successful transactions.
-    const before = ctl.signal.eventNames ? undefined : null;
+    // getEventListeners is the PUBLIC API (node:events) — the r1 draft used
+    // the private `_events` and was a no-op on modern Node (panel r2 caught it).
+    const before = getEventListeners(ctl.signal, 'abort').length;
     for (let i = 0; i < 20; i++) {
       await ctx.withChartContext({ symbol: 'MSFT' }, async () => ({ i }), { label: 'reuse', signal: ctl.signal });
     }
-    // Node exposes listener count on raw EventEmitter; AbortSignal wraps it.
-    const listeners = (ctl.signal._events ? Object.values(ctl.signal._events).flat().length : 0)
-      ?? before ?? 0;
-    assert.ok(listeners === 0, `expected 0 remaining abort listeners, got ${listeners}`);
+    const after = getEventListeners(ctl.signal, 'abort').length;
+    assert.equal(after, before, `expected no listener growth across 20 calls (before ${before}, after ${after})`);
   });
 
   test('P2-18 (panel r1): op that rejects AFTER abort wins does not crash the process', async () => {

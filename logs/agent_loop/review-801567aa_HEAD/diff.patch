@@ -1,0 +1,280 @@
+diff --git a/src/core/context.js b/src/core/context.js
+index 9a83e57c..ff1e1271 100644
+--- a/src/core/context.js
++++ b/src/core/context.js
+@@ -80,16 +80,23 @@ export function createChartContext({ evaluate, evaluateAsync, waitForChartReady
+    * - restore touches ONLY what this transaction actually changed (a request
+    *   that matches the live chart writes nothing);
+    * - restore runs even when op throws (the flip may already have happened);
+    * - the next queued transaction starts only after our restore completes;
+    * - restore failures never mask the op result (reported as restore_error),
+    *   and never mask the op error (swallowed on the failure path).
+    */
+   async function withChartContext(requested, op, { label = 'unnamed', signal } = {}) {
++    // Panel finding (r1): a pre-aborted signal must reject the caller NOW —
++    // queuing it behind a held lock would delay rejection by the whole op.
++    if (signal?.aborted) {
++      const abortError = new Error(`withChartContext(${label}): aborted by caller`);
++      abortError.name = 'AbortError';
++      return Promise.reject(abortError);
++    }
+     return new Promise((resolve) => {
+       // P2-18 slice: caller cancellation. The op races against the signal;
+       // abort rejects the CALLER while the restore path still runs (the flip
+       // may already have happened), so the chart is never left mutated by a
+       // cancelled call. Nothing can kill a page-side evaluate mid-flight —
+       // the op body may finish in the background — so this is caller-visible
+       // cancellation, not op termination.
+       const abortError = new Error(`withChartContext(${label}): aborted by caller`);
+@@ -132,22 +139,37 @@ export function createChartContext({ evaluate, evaluateAsync, waitForChartReady
+             await applyIdentity({ symbol: requestedIdentity.symbol, timeframe: null });
+           }
+ 
+           // P2-18: race the op against caller abort. The op body may still
+           // complete in the background (nothing can kill a running evaluate),
+           // but the CALLER sees the rejection and restore runs immediately.
+           const opP = Promise.resolve(op({ prior: txn.prior, applied: flipped }));
+           let result;
++          let onAbort = null; // hoisted: the finally below must always see it
+           if (signal) {
+-            const abortP = new Promise((_, rej) => {
+-              if (signal.aborted) { rej(abortError); return; }
+-              signal.addEventListener('abort', () => rej(abortError), { once: true });
+-            });
+-            result = await Promise.race([opP, abortP]);
++            // Panel finding (r1): the abort listener must not outlive this
++            // transaction — callers reuse session-level signals, and one
++            // leaked listener per call is a real leak (MaxListeners after 11).
++            let settleAbort = null;
++            const abortP = new Promise((_, rej) => { settleAbort = () => rej(abortError); });
++            if (signal.aborted) settleAbort();
++            else {
++              onAbort = () => settleAbort();
++              signal.addEventListener('abort', onAbort, { once: true });
++            }
++            try {
++              result = await Promise.race([opP, abortP]);
++            } finally {
++              if (onAbort) signal.removeEventListener('abort', onAbort);
++              // Panel finding (r1): after an abort wins, opP still settles —
++              // if the op later REJECTS, that is an unhandled rejection that
++              // kills the process. The caller already holds the AbortError.
++              opP.catch(() => {});
++            }
+           } else {
+             result = await opP;
+           }
+ 
+           // Post-op identity: detect whether anything else moved the chart
+           // while we held it (agent UI interaction, a second TV window, etc.)
+           let external_change = null;
+           if (flipped) {
+diff --git a/src/gateway/http.js b/src/gateway/http.js
+index 46be6f4d..c5fcf987 100644
+--- a/src/gateway/http.js
++++ b/src/gateway/http.js
+@@ -63,56 +63,78 @@ function sseHead(res) {
+ }
+ 
+ async function handleStream(req, res, kind, url, _deps = null) {
+   if (!STREAM_KINDS.has(kind)) {
+     res.writeHead(404, { 'Content-Type': 'application/json' });
+     res.end(JSON.stringify({ success: false, error: { code: 'http_not_found', message: `unknown stream kind '${kind}' (known: ${[...STREAM_KINDS].join(', ')})`, retryable: false } }));
+     return;
+   }
++  // Panel finding (r1): validate interval BEFORE the SSE handshake —
++  // NaN falls back safely (falsy), but NEGATIVE values are truthy and feed
++  // setTimeout a negative delay (hot loop). Bad values → 400 with envelope.
++  let interval;
++  const rawInterval = url.searchParams.get('interval');
++  if (rawInterval != null) {
++    interval = Number(rawInterval);
++    if (!Number.isFinite(interval) || interval < 50) {
++      res.writeHead(400, { 'Content-Type': 'application/json' });
++      res.end(JSON.stringify({ success: false, error: { code: 'http_bad_request', message: 'interval must be a number >= 50 (ms)', retryable: false } }));
++      return;
++    }
++  }
+   sseHead(res);
+-  const interval = url.searchParams.get('interval') ? Number(url.searchParams.get('interval')) : undefined;
+   const disconnected = { stop: false };
+   // P2-18 slice: disconnect cancels the poll loop — BOTH ends (req for client
+   // abort, res for server-side finish), so no orphaned subscriber survives.
+   req.on('close', () => { disconnected.stop = true; });
+   res.on('close', () => { disconnected.stop = true; });
+   try {
+     for await (const event of subscribe(kind, { interval, _deps, shouldStop: () => disconnected.stop })) {
+       if (event.kind === 'connection') {
+         res.write(`event: connection\ndata: ${JSON.stringify({ status: event.status })}\n\n`);
+       } else {
+         res.write(`data: ${JSON.stringify(event)}\n\n`);
+       }
+       if (disconnected.stop) break;
+     }
+-  } catch {
+-    // client gone mid-write or subscriber error — nothing to do; loop already stopped
++  } catch (err) {
++    // Panel finding (r1): a subscriber exception must reach the client as an
++    // error event, not a silently truncated stream.
++    try {
++      res.write(`event: error\ndata: ${JSON.stringify({ success: false, error: { code: 'upstream_failed', message: String(err?.message || err), retryable: true } })}\n\n`);
++    } catch { /* socket gone */ }
+   }
+   try { res.end(); } catch { /* socket already closed */ }
+ }
+ 
+ export async function handleRequest(req, res, _deps = null) {
+   const url = new URL(req.url, 'http://127.0.0.1');
+   const pathMatch = url.pathname.match(/^\/stream\/([a-z]+)$/);
+ 
+-  if (pathMatch) {
+-    await handleStream(req, res, pathMatch[1], url, _deps);
++  // Panel finding (r1): ONE guard that keeps the 404-vs-405 distinction —
++  // known routes (incl. /stream/<kind>) get 405 on non-GET; unknown paths 404
++  // regardless of method.
++  const knownPath = Boolean(pathMatch) || ROUTES.some((r) => r.path === url.pathname) || url.pathname === '/health';
++  if (req.method !== 'GET') {
++    // Mutations over HTTP are excluded by plan §4.3 until an ADR exists.
++    res.writeHead(knownPath ? 405 : 404, { 'Content-Type': 'application/json', Allow: knownPath ? 'GET' : undefined });
++    res.end(JSON.stringify(knownPath
++      ? { success: false, error: { code: 'http_method_not_allowed', message: 'gateway is read-only (mutations are MCP/CLI-only by design)', retryable: false } }
++      : { success: false, error: { code: 'http_not_found', message: `no route ${url.pathname}`, retryable: false } }));
+     return;
+   }
+-
+-  if (!ROUTES.some((r) => r.path === url.pathname) && url.pathname !== '/health') {
++  if (!knownPath) {
+     res.writeHead(404, { 'Content-Type': 'application/json' });
+     res.end(JSON.stringify({ success: false, error: { code: 'http_not_found', message: `no route ${url.pathname}`, retryable: false } }));
+     return;
+   }
+-  if (req.method !== 'GET') {
+-    // Mutations over HTTP are excluded by plan §4.3 until an ADR exists.
+-    res.writeHead(405, { 'Content-Type': 'application/json', Allow: 'GET' });
+-    res.end(JSON.stringify({ success: false, error: { code: 'http_method_not_allowed', message: 'gateway is read-only (mutations are MCP/CLI-only by design)', retryable: false } }));
++
++  if (pathMatch) {
++    await handleStream(req, res, pathMatch[1], url, _deps);
+     return;
+   }
+ 
+   if (url.pathname === '/health') {
+     res.writeHead(200, { 'Content-Type': 'application/json' });
+     res.end(JSON.stringify({ success: true, gateway: 'up', profile: getActiveProfile() }));
+     return;
+   }
+diff --git a/tests/context.test.js b/tests/context.test.js
+index b5b0dc51..11776795 100644
+--- a/tests/context.test.js
++++ b/tests/context.test.js
+@@ -142,16 +142,66 @@ describe('withChartContext: transactional behavior', () => {
+     ctl.abort();
+     await assert.rejects(
+       () => ctx.withChartContext({ symbol: 'NASDAQ:AAPL' }, async () => ({ v: 1 }), { signal: ctl.signal }),
+       /aborted by caller/
+     );
+     assert.equal(d.log.filter((l) => l.startsWith('write')).length, 0, 'no chart writes at all');
+   });
+ 
++  test('P2-18 (panel r1): pre-aborted rejects IMMEDIATELY, even while the lock is held', async () => {
++    const d = mockDeps();
++    const ctx = createChartContext(d);
++    // Op A holds the lock until released.
++    let releaseA = null;
++    const blocker = ctx.withChartContext({ symbol: 'MSFT' }, () => new Promise((r) => { releaseA = r; }), { label: 'A' });
++    await new Promise((r) => setTimeout(r, 5)); // let A acquire the lock
++    const ctlB = new AbortController();
++    ctlB.abort();
++    const t0 = Date.now();
++    await assert.rejects(
++      () => ctx.withChartContext({ symbol: 'TSLA' }, async () => ({ v: 1 }), { label: 'B', signal: ctlB.signal }),
++      /aborted by caller/
++    );
++    assert.ok(Date.now() - t0 < 50, `rejected promptly (${Date.now() - t0}ms), not queued behind A`);
++    releaseA();
++    await blocker;
++  });
++
++  test('P2-18 (panel r1): no listener leak on a reused session signal', async () => {
++    const d = mockDeps();
++    const ctx = createChartContext(d);
++    const ctl = new AbortController();
++    // Session-level signal reused across many successful transactions.
++    const before = ctl.signal.eventNames ? undefined : null;
++    for (let i = 0; i < 20; i++) {
++      await ctx.withChartContext({ symbol: 'MSFT' }, async () => ({ i }), { label: 'reuse', signal: ctl.signal });
++    }
++    // Node exposes listener count on raw EventEmitter; AbortSignal wraps it.
++    const listeners = (ctl.signal._events ? Object.values(ctl.signal._events).flat().length : 0)
++      ?? before ?? 0;
++    assert.ok(listeners === 0, `expected 0 remaining abort listeners, got ${listeners}`);
++  });
++
++  test('P2-18 (panel r1): op that rejects AFTER abort wins does not crash the process', async () => {
++    const d = mockDeps();
++    const ctx = createChartContext(d);
++    const ctl = new AbortController();
++    const p = ctx.withChartContext({ symbol: 'MSFT' }, async () => {
++      await new Promise((r) => setTimeout(r, 40));
++      throw new Error('late page-side failure');
++    }, { label: 'latereject', signal: ctl.signal });
++    setTimeout(() => ctl.abort(), 5);
++    await assert.rejects(() => p, /aborted by caller/);
++    // Give the background op time to reject — an unhandledRejection here
++    // crashes the test runner under Node 15+ semantics.
++    await new Promise((r) => setTimeout(r, 120));
++    assert.equal(d.state.symbol, 'CME_MINI:NQ1!', 'chart restored');
++  });
++
+   test('serialization: overlapping contexts run strictly one after another', async () => {
+     const d = mockDeps();
+     const ctx = createChartContext(d);
+     const events = [];
+     const a = ctx.withChartContext({ symbol: 'MSFT' }, async () => {
+       events.push('a-start');
+       await new Promise(r => setTimeout(r, 30));
+       events.push('a-end');
+diff --git a/tests/gateway.test.js b/tests/gateway.test.js
+index 78ecdb73..269d9f63 100644
+--- a/tests/gateway.test.js
++++ b/tests/gateway.test.js
+@@ -82,23 +82,38 @@ describe('gateway (loopback HTTP + SSE)', () => {
+   test('mutations are refused: POST → 405 read-only', async () => {
+     const { port, close } = await boot();
+     try {
+       const r = await get(port, '/state', 'POST');
+       assert.equal(r.status, 405);
+       const body = JSON.parse(r.body);
+       assert.equal(body.error.code, 'http_method_not_allowed');
+       assert.ok(/read-only/.test(body.error.message));
++      // Panel finding (r1): stream routes are known paths — POST must 405, not 404.
++      const rs = await get(port, '/stream/quote', 'POST');
++      assert.equal(rs.status, 405);
++      assert.equal(JSON.parse(rs.body).error.code, 'http_method_not_allowed');
++    } finally { await close(); }
++  });
++
++  test('interval validation: negative/non-numeric → 400 (panel r1: negative = hot-loop)', async () => {
++    const { port, close } = await boot();
++    try {
++      for (const q of ['?interval=-5', '?interval=abc']) {
++        const r = await get(port, `/stream/quote${q}`);
++        assert.equal(r.status, 400, q);
++        assert.equal(JSON.parse(r.body).error.code, 'http_bad_request', q);
++      }
+     } finally { await close(); }
+   });
+ 
+   test('SSE stream serves event-stream and emits connection events offline', async () => {
+     const { port, close } = await boot();
+     try {
+-      const r = await getSse(port, '/stream/quote?interval=40', 600);
++      const r = await getSse(port, '/stream/quote?interval=100', 600);
+       assert.equal(r.status, 200);
+       assert.match(r.headers['content-type'] ?? '', /text\/event-stream/);
+       assert.ok(r.body.startsWith(':ok'), 'SSE prelude present');
+       assert.ok(r.body.includes('event: connection'), 'connection event emitted');
+       assert.ok(r.body.includes('"status":"lost"'), 'lost status present');
+     } finally { await close(); }
+   });
+ 
