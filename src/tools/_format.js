@@ -22,6 +22,22 @@ const CDP_ERROR_REASONS = Object.freeze({
   cdp_command_failed:   { retryable: false, suggested_action: 'Inspect inputs; failure was not transient' },
 });
 
+/**
+ * REST-surface reasons (src/core/rest.js). Sibling table to the frozen CDP set
+ * above — kept separate so the CDP contract test (tests/format.test.js) stays
+ * exact while the upstream HTTP class gets its own codes. The distinction is
+ * the point: "TV said no" must be separable from "the CDP transport broke".
+ */
+const REST_ERROR_REASONS = Object.freeze({
+  upstream_http_error:  { retryable: false, suggested_action: 'The TradingView endpoint refused the request — check the symbol/params; this is not transient' },
+  upstream_invalid_json:{ retryable: false, suggested_action: 'The endpoint returned a non-JSON body (likely an interstitial or a shape change); re-probe the surface' },
+  upstream_timeout:     { retryable: true,  suggested_action: 'Retry; these endpoints are undocumented and may throttle' },
+  upstream_unavailable: { retryable: true,  suggested_action: 'Retry; if it persists the host is down or the network is unreachable (the desktop app is NOT required for this call)' },
+  ssr_payload_missing:  { retryable: false, suggested_action: 'The page SSR shape changed — this tool fails loudly rather than degrading; re-verify against docs/REST_DATA_SURFACES.md' },
+  invalid_input:        { retryable: false, suggested_action: 'Fix the argument named in the message' },
+  not_found:            { retryable: false, suggested_action: 'The symbol or id does not resolve; qualify it as EXCHANGE:TICKER' },
+});
+
 // Reserved for P2-5 mutation preconditions. Defined now so the error-code
 // enum is stable before any caller can emit it.
 const RESERVED_CODES = Object.freeze(['precondition_failed', 'state_changed']);
@@ -32,7 +48,7 @@ function buildErrorEnvelope(err, context = {}) {
   // through verbatim as the code; generic errors get message classification.
   const reason = (isCdp && err.reason) || err?.reason || classifyGeneric(err);
   const reserved = RESERVED_CODES.includes(reason);
-  const meta = CDP_ERROR_REASONS[reason] || CDP_ERROR_REASONS.cdp_command_failed;
+  const meta = CDP_ERROR_REASONS[reason] || REST_ERROR_REASONS[reason] || CDP_ERROR_REASONS.cdp_command_failed;
   const outcome_unknown = Boolean(err?.outcome_unknown);
 
   const envelope = {
@@ -93,4 +109,4 @@ export function jsonResult(obj, isError = false) {
   };
 }
 
-export { CDP_ERROR_REASONS, RESERVED_CODES, buildErrorEnvelope };
+export { CDP_ERROR_REASONS, REST_ERROR_REASONS, RESERVED_CODES, buildErrorEnvelope };

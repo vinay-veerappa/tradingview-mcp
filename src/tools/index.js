@@ -24,6 +24,7 @@ import { registerTabTools } from './tab.js';
 import { registerPaperTools } from './paper.js';
 import { registerReliabilityTools } from './reliability.js';
 import { registerPaneScanTools } from './pane_scan.js';
+import { registerRestTools } from './rest.js';
 
 /**
  * Mirror one registry op into the SDK registration table. Used by the
@@ -59,4 +60,5 @@ export function registerAll(server, opts = {}) {
   registerPaperTools(server, opts);
   registerReliabilityTools(server, opts);
   registerPaneScanTools(server, opts);
+  registerRestTools(server, opts);
 }

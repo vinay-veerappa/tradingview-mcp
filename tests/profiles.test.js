@@ -40,11 +40,13 @@ describe('profile definitions (P2-19/§3.1)', () => {
     }
   });
 
-  test('toolsForProfile: base=27ish incl. status/pf, paper=15, devel=null', () => {
+  test('toolsForProfile: base=42ish incl. status/pf, paper=15, devel=null', () => {
     const base = toolsForProfile('base');
     assert.equal(base.has('system_status'), true);
     assert.equal(base.has('profile_set'), true);
     assert.equal(base.has('session_snapshot'), true);
+    assert.equal(base.has('tv_symbol_data'), true, 'REST data surface is in base');
+    assert.equal(base.has('tv_economic_calendar'), true);
     assert.equal(base.has('ui_evaluate'), false, 'ui_evaluate gated out of base');
     assert.equal(base.has('replay_trade'), false);
     assert.equal(base.has('tv_update'), false);
@@ -107,7 +109,7 @@ describe('system_status introspection (P2-14)', () => {
 // ---------- payload budgets (P2-20) ----------
 
 describe('tools/list payload budgets per profile', () => {
-  test('base profile advertised payload stays under 12 KB', () => {
+  test('base profile advertised payload stays under its recorded ceiling', () => {
     const server = freshServer();
     applyProfile(server, 'base');
     let bytes = 0;
@@ -117,8 +119,12 @@ describe('tools/list payload budgets per profile', () => {
       // (schemas add ~30-60%; measured against the full wire format in CI)
       bytes += JSON.stringify({ name, description: t.description ?? '', annotations: t.annotations ?? {} }).length;
     }
-    // 12KB ceiling with the schema-less estimate
-    assert.ok(bytes < 12 * 1024, `base profile metadata ${bytes} bytes exceeds 12 KB budget`);
+    // Measured baseline after the REST data surface (12 read-only data tools,
+    // docs/REST_DATA_SURFACES.md §11) grew base from 27 to 42 tools:
+    // 12,548 bytes. Ceiling = baseline + ~10% drift. The REST descriptions were
+    // trimmed once to land here; the long-form caveats live in each result's
+    // `note` field rather than in the advertised description.
+    assert.ok(bytes < 13.8 * 1024, `base profile metadata ${bytes} bytes exceeds 13.8 KB budget`);
   });
 
   test('full devel surface stays measured-and-known (~40KB, no silent growth)', () => {

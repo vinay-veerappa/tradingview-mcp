@@ -24,12 +24,17 @@ The debug port is disabled by default and must be explicitly enabled by you usin
 
 ## What This Tool Does Not Provide
 
-- Standalone or offline TradingView access; the Desktop session and some tools make authenticated service requests
 - Automatic transmission or redistribution of market data to third parties
-- Work without a valid TradingView subscription and installed Desktop app
 - Bypass any TradingView paywall or access restriction
 - Provide a broker-order API; replay trades use TradingView's historical replay API
 - Work if TradingView changes their internal Electron structure
+
+> **No Desktop app needed for the data tools.** The `tv_symbol_data`,
+> `tv_screener_*`, `tv_*_calendar`, `tv_news*` and `tv_documents` tools use
+> TradingView's public, cookie-less HTTP endpoints, so they work with the app
+> closed and no login. Everything else (chart reading/control, Pine, paper
+> trading) needs the Desktop app running with CDP. Documented in
+> [docs/REST_DATA_SURFACES.md](docs/REST_DATA_SURFACES.md).
 
 ## Research Context
 
@@ -66,6 +71,7 @@ Gives your AI assistant eyes and hands on your own chart:
 - **Replay practice** — step through historical bars, practice entries/exits
 - **Screenshots** — capture chart state for AI visual analysis
 - **Multi-pane layouts** — set up 2x2, 3x1, etc. grids with different symbols per pane
+- **Chart-independent data** — quotes, technicals, fundamentals, forecasts, dividends, 20-year financial and EPS/dividend history, screening across markets, earnings and macro calendars, news (headlines and full text), and filings lists for *any* symbol, without the Desktop app
 - **Monitor your chart** — stream JSONL from your locally running chart for local monitoring scripts
 - **CLI access** — every MCP tool is also a `tv` CLI command, pipe-friendly with JSON output
 - **Launch TradingView** — auto-detect and launch with debug mode from any platform

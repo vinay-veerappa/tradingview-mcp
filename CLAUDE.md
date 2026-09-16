@@ -1,7 +1,7 @@
 # TradingView MCP — Claude Instructions
 
 MCP server for reading and controlling a live TradingView Desktop chart via CDP (port 9222).
-Surface is **profiled**: `base` (default, 30 tools), `pine`, `control`, `paper`; `devel` = everything
+Surface is **profiled**: `base` (default, 42 tools), `pine`, `control`, `paper`; `devel` = everything
 (dynamic, set via `TRADINGVIEW_MCP_PROFILE` env or `profile_set`). `system_status` always shows
 what is visible/hidden and which capability gates are armed.
 
@@ -39,6 +39,21 @@ for targeted reads use `study_filter`:
 - `data_get_ohlcv` with `summary: true` → compact stats (high, low, range, change%, avg volume, last 5 bars)
 - `data_get_ohlcv` without summary → all bars (use `count` to limit, default 100)
 - `quote_get` → single latest price snapshot
+
+### "Answer this WITHOUT the chart / TradingView isn't running / any other symbol"
+Chart-independent market & reference data over public cookie-less HTTP — no desktop app, no chart,
+no login. 12 read-only tools, implemented from `docs/REST_DATA_SURFACES.md` (§11):
+1. `tv_symbol_data` → ONE call for quote / technicals / fundamentals / forecasts / dividends /
+   profile / earnings dates / multi-year history. `fields` mixes group names and raw screener
+   columns (547-name allowlist via `tv_screener_columns`). Batch up to 50 symbols.
+2. `tv_screener_run` → many symbols in ONE request, server-side filter/sort, free `total_count`.
+   ⚠️ You cannot filter ON a history field — filter on a scalar and carry the `_h` column.
+3. `tv_symbol_history` / `tv_earnings_history` / `tv_dividend_history` / `tv_technicals_rating` → focused single-symbol reads
+4. `tv_earnings_calendar` / `tv_economic_calendar` → forward-looking event windows
+5. `tv_news` → headlines (per-symbol or market flow) · `tv_news_story` → full text · `tv_documents` → filings list
+Results carry a `note` field with the surface's caveats — relay it. Distinct error codes
+(`upstream_http_error`, `upstream_timeout`, `ssr_payload_missing`, …) separate "TV said no" from
+"CDP broke". Gateway: GET `/symbol/data`, `/screener`, `/calendar/economic`, `/news`, `/documents`, …
 
 ### "Analyze my chart" (full report workflow)
 1. `session_snapshot` (preset `analysis`) → quote + studies + Pine surface in one read
@@ -163,10 +178,11 @@ These tools can return large payloads. Follow these rules to avoid context bloat
 ## Architecture
 
 ```
-MCP Client ←→ MCP Server (stdio, profiled 30-tool base) ←→ CDP (localhost:9222) ←→ TradingView Desktop (Electron)
-                 │
-                 ├─ subscribe(kind) → AsyncIterable  (CLI JSONL sinks · MCP resource notifications · gateway SSE)
+MCP Client ←→ MCP Server (stdio, profiled 42-tool base) ←→ CDP (localhost:9222) ←→ TradingView Desktop (Electron)
+                 │                                          ╲
+                 ├─ subscribe(kind) → AsyncIterable           ╲─ public cookie-less HTTP (src/core/rest.js):
                   └─ resources: tradingview://chart/{state,quote}, capabilities
+                     scanner · chartevents-reuters · news · SSR init-data (no app, no chart, no login)
 ```
 
 Pine graphics path: `study._graphics._primitivesCollection.dwglines.get('lines').get(false)._primitivesDataById`
@@ -178,7 +194,7 @@ input schema, annotations (access class DERIVED from them), handler, transports.
 The MCP table mirrors it (`toolFromRegistry`); the loopback gateway's route table
 is GENERATED from the same set (`httpRoutes()`), and only read ops can carry an
 `http` transport (`{ method, path, adapter(url, _deps) }`) — mutations are
-structurally unbindable until an ADR says otherwise. 102 ops;
+structurally unbindable until an ADR says otherwise. 114 ops;
 `system_status`/`profile_set` sit outside deliberately (they describe the registry).
 Contract tests: `tests/registry.test.js`.
 
@@ -191,7 +207,7 @@ financial history, EPS/dividend history, earnings calendar, economic calendar,
 news, news-story text, documents/filings and the screener column catalogue,
 plus the widget-config and SSR `prs.init-data+json` harvest techniques, are in
 `docs/REST_DATA_SURFACES.md`. **11 of 13 capabilities solved, 2 open** (§10).
-Nothing is implemented from it yet.
+**12 tools implemented** (§11) — see the decision tree above.
 
 Decided for implementation: **one `tv_symbol_data` tool with a named-field map**
 (groups + raw columns + escape hatch), not one tool per capability — design and

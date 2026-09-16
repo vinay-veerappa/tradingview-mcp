@@ -18,9 +18,9 @@ const REGISTRY_TOOLS = listOps().map((o) => o.name);
 const ALWAYS_VISIBLE = ['system_status', 'profile_set'];
 
 describe('canonical operation registry (P2-19)', () => {
-  test('every registry op is unique and non-empty (102-tool surface)', () => {
+  test('every registry op is unique and non-empty (full surface)', () => {
     assert.equal(new Set(REGISTRY_TOOLS).size, REGISTRY_TOOLS.length, 'duplicate op names');
-    assert.ok(REGISTRY_TOOLS.length >= 100, `expected the full surface, got ${REGISTRY_TOOLS.length}`);
+    assert.ok(REGISTRY_TOOLS.length >= 114, `expected the full surface, got ${REGISTRY_TOOLS.length}`);
   });
 
   test('no registry op collides with the always-visible system tools', () => {
@@ -151,6 +151,29 @@ describe('derived HTTP route table (gateway generation)', () => {
     for (const p of ['/state', '/quote', '/snapshot', '/panes', '/compat', '/diagnostics']) {
       assert.ok(paths.includes(p), `missing ${p}`);
     }
+  });
+
+  test('REST data surface binds as read-only GETs (docs/REST_DATA_SURFACES.md §11)', () => {
+    const restOps = listOps().filter((o) => o.name.startsWith('tv_') && o.transports.http);
+    const restRoutes = restOps.filter((o) => /^\/(symbol|screener|calendar|news|documents)/.test(o.transports.http.path));
+    assert.equal(restRoutes.length, 12, 'all 12 REST tools carry a route');
+    for (const o of restRoutes) {
+      assert.equal(o.access, 'read', o.name);
+      assert.equal(o.transports.http.method, 'GET', o.name);
+      assert.equal(o.meta?.mutation_adr, undefined, `${o.name}: reads cite no ADR`);
+      assert.ok(o.annotations.readOnlyHint === true, o.name);
+    }
+    // REST route paths are disjoint from the chart routes. Uniqueness itself is
+    // method+path (one path may deliberately serve GET + POST, e.g. /paper/orders).
+    const chartPaths = new Set(
+      listOps().filter((o) => o.transports.http && !/^\/(symbol|screener|calendar|news|documents)/.test(o.transports.http.path))
+        .map((o) => o.transports.http.path),
+    );
+    for (const o of restRoutes) {
+      assert.equal(chartPaths.has(o.transports.http.path), false, `${o.name} reuses a chart path`);
+    }
+    const keys = httpRoutes().map((r) => `${r.method} ${r.path}`);
+    assert.equal(new Set(keys).size, keys.length, 'duplicate method+path in the derived table');
   });
 
   test('mutation routes exist ONLY for paper mutation ops (ADR 0001 scope)', () => {

@@ -37,6 +37,13 @@ export const PROFILES = Object.freeze({
     'chart_set_symbol', 'chart_set_timeframe', 'chart_set_type',
     'chart_manage_indicator', 'chart_scroll_to_date', 'alert_create', 'alert_list',
     'draw_shape', 'draw_list', 'draw_remove_one',
+    // REST data surface (docs/REST_DATA_SURFACES.md §11): chart-independent
+    // market/reference data over public cookie-less HTTP — no desktop app, no
+    // chart, no login. Read-only, so they belong beside quote_get.
+    'tv_symbol_data', 'tv_symbol_history', 'tv_earnings_history', 'tv_dividend_history',
+    'tv_technicals_rating', 'tv_screener_run', 'tv_screener_columns',
+    'tv_earnings_calendar', 'tv_economic_calendar',
+    'tv_news', 'tv_news_story', 'tv_documents',
   ]),
   // Pine development: editor + compiler + analysis. Adds to base.
   pine: [

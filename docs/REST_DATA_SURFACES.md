@@ -1,9 +1,14 @@
 # REST Data Surfaces — Discovery
 
-Status: **endpoint evidence captured and verified** (2026-09-15, live probes from
-Node 24.11 and the repo venv Python). **11 of 13 target capabilities solved;
-2 open** (§10). No MCP tool is implemented from this document yet. All requests
-below are unauthenticated and cookie-less.
+Status: **implemented** (2026-09-16). Endpoint evidence captured and verified
+2026-09-15 from live probes (Node 24.11 and the repo venv Python). **11 of 13
+target capabilities solved; 2 open** (§10). **§11's proposed 12 tools are now
+BUILT**: `src/core/rest.js` (transport, field maps, SSR extraction, shaping) +
+`src/tools/rest.js` (12 read-only ops, each with a derived GET binding in the
+loopback gateway), in the `base` profile, with offline contract tests in
+`tests/rest.test.js` (58 cases — no test touches the network). Every endpoint
+shape below was re-verified live against the implementation the day it landed.
+All requests below are unauthenticated and cookie-less.
 
 ## Purpose and scope
 
@@ -146,8 +151,18 @@ allowlist covers five of the official MCP's tools.
 | **Dividend history** | `dps_common_stock_prim_issue_fy_h` → **array** (20y) (§2.2.1) |
 | Fiscal-year labels | `fiscal_period_fy_h` → `[2025,2024,...]`, index-aligns the `_fy_h` arrays |
 
-Timeframe is a suffix on the field name: `RSI|60` = RSI on the 1h. Verified
-values: `1, 5, 15, 30, 60, 120, 240, 1D, 1W, 1M`.
+Timeframe is a suffix on the field name: `RSI|60` = RSI on the 1h.
+
+**CORRECTED 2026-09-16 (implementation finding — the original list below was
+wrong).** Verified working suffixes: `1, 5, 15, 30, 60, 120, 240, 1W, 1M`.
+**`|1D` returns `null` for every field** and so do `|D`, `|W`, `|M`, `|2`, `|3`,
+`|45`, `|180`, `|480`, `|720`, `|12M`. The **DAILY value is the BARE field
+name** — `RSI` is daily RSI, `Recommend.All` is the daily rating. Proof: Wilder
+RSI(14) computed from Yahoo daily closes for AAPL = `61.3086`, and the scanner's
+bare `RSI` = `61.30858354729889` (exact match), while `RSI|1D` = `null`.
+
+`tv_technicals_rating` therefore accepts `1D`/`daily`/`D` and realizes it by
+emitting the unsuffixed name, never `|1D` (`TIMEFRAMES` in `src/core/rest.js`).
 
 > `recommendation|60` returned `null` for AAPL while `Recommend.All|60` returned
 > a value. Prefer the `Recommend.*` field family; treat bare `recommendation` as
@@ -322,7 +337,10 @@ GET https://chartevents-reuters.tradingview.com/events?from=2026-09-16&to=2026-0
 ```
 
 - `importance`: `-1` low, `0` medium, `1` high (matches the official tool's
-  `min_importance` scale).
+  `min_importance` scale). **Implementation note:** a live no-country probe on
+  2026-09-16 also emitted `2`, which is outside the documented scale —
+  `tv_economic_calendar` therefore labels only the three documented values and
+  returns `importance_label: null` for anything else rather than coercing it.
 - `countries` accepts a comma-separated ISO-2 list; omitted returns all.
 - The `id` field is a composite string (timestamp + title), **not** a stable
   numeric id — do not use it as a primary key.
@@ -440,8 +458,15 @@ Same `prs.init-data+json` mechanism as §4.3. The filings block is the one
 matching `symbol-page-tab-filings`. Structure:
 
 ```
-page.documents = { items: [...], meta: {...}, total }
+symbolPage.documents = { items: [...], meta: {...}, total }
 ```
+
+**Implementation note (2026-09-16):** the filings object hangs off the symbol
+page alongside its siblings — `page.earnings` (the date-keyed map), `currency`,
+`active_tab` — so the implementation matches on `documents.items + total` on the
+PARENT and reads `page.documents.*`. Matching the bare `{items,total}` child
+would find the same object but lose the sibling earnings map. There are 7
+init-data blocks on the page and the filings one is block **3**, not block 0.
 
 Verified: **AAPL 157 documents**, NVDA 146, MSFT 86 (`documents.total` equals
 `items.length` — the whole set ships in the page, no paging).
@@ -477,6 +502,16 @@ Verified: **AAPL 157 documents**, NVDA 146, MSFT 86 (`documents.total` equals
 `all`, `earnings`, `quarterly_reports`, `annual_reports`, each with
 `available`, `attrs.title`, and `events`/`categories`. Use it to validate
 category filters rather than hardcoding.
+
+**Implementation finding (2026-09-16):** the tree is **nested**, and a filter id
+owns its whole subtree. Live AAPL shape: `earnings` → {`quarterly_reports`,
+`annual_reports` (+`interim_reports`, `available: false`), `earnings_releases`,
+`call_transcript`}; `corporate_events` → {`event_transcript`}. So
+`category: "earnings"` matches **144** items across 4 category ids, while
+`category: "corporate_events"` matches 12 `event_transcript` items — the two
+subtrees are disjoint. `tv_documents` collects the subtree's category set (not
+just the id), and surfaces `available` so a caller can tell a dead filter from
+an empty result.
 
 `page.earnings` is a **separate** date-keyed map (unix seconds → `{date,
 standardized, estimate, period, timeType, reported, revenueEstimate,
@@ -688,29 +723,42 @@ Recorded so the next attempt does not repeat them:
 Every tool must be one registry op (`src/tools/_registry.js op()`), with
 annotations from `A.*` and a **read-only** access class. Read ops may carry an
 `http` transport (`{ method, path, adapter }`) which auto-binds a gateway route;
-mutations cannot without an ADR (see `CLAUDE.md` §Mutation routes).
+mutations cannot without an ADR (see `CLAUDE.md` Mutation routes).
 
-Suggested set — **one new core module, one new tool file**:
+**[BUILT 2026-09-16]** — one new core module, one new tool file, exactly as
+suggested (plus the wire-in points):
 
 ```
-src/core/rest.js       # host table, UA, get/post, init-data extractor, shaping
-src/tools/rest.js      # op() registrations
+src/core/rest.js       # host table, UA, get/post, init-data extractor, shaping   ← BUILT
+src/tools/rest.js      # op() registrations                                       ← BUILT
+src/core/index.js      # export * as rest                                        ← wired
+src/tools/index.js     # registerRestTools + registerAll                         ← wired
+src/tools/_profiles.js # 12 names added to the `base` allowlist                  ← wired
+src/tools/_format.js   # REST_ERROR_REASONS table beside the frozen CDP one      ← wired
+eslint.config.mjs      # AbortSignal global (first src/ use)                      ← wired
+docs/fixtures/*.json   # loaded at startup as a typo allowlist, never fetched     ← wired
+tests/rest.test.js     # 58 offline cases (stubbed _deps.fetch)                   ← BUILT
 ```
 
-| Proposed tool | Wraps | Official equivalent |
-|---|---|---|
-| `tv_screener_run` | `POST /{market}/scan` | `run_screener` |
-| `tv_symbol_data` | `GET /symbol` (quote, profile, fundamentals, forecasts, dividends) | `get_symbol_data`, `get_symbol_data_batch`, `get_financials`, `get_forecasts` |
-| `tv_symbol_history` | `GET /symbol` with the 15 `_h` fields (§2.2.1) | `get_financial_history` |
-| `tv_earnings_history` | `GET /symbol` → `earnings_per_share_diluted_fy_h`/`_fq_h` + `fiscal_period_fy_h` | *(scanner use)* |
-| `tv_dividend_history` | `GET /symbol` → `dps_common_stock_prim_issue_fy_h` | *(scanner use)* |
-| `tv_technicals_rating` | `GET /symbol` + fixed field set | `get_technicals_rating` |
-| `tv_earnings_calendar` | `POST /{market}/scan` filtered by `earnings_release_next_date` | `get_earnings_calendar` |
-| `tv_economic_calendar` | `chartevents-reuters/events` | `get_economic_calendar` |
-| `tv_news` | `news-headlines/v2/headlines` + `news-mediator` | `get_news` |
-| `tv_news_story` | story page SSR init-data | `get_news_story` |
-| `tv_documents` | documents page SSR init-data | `get_documents` |
-| `tv_screener_columns` | harvested bundle list (§2.5) | `get_screener_columns` |
+| Built tool | Wraps | GET route | Official equivalent |
+|---|---|---|---|
+| `tv_screener_run` | `POST /{market}/scan` | `/screener` | `run_screener` |
+| `tv_symbol_data` | `GET /symbol` (quote, profile, fundamentals, forecasts, dividends) | `/symbol/data` | `get_symbol_data`, `get_symbol_data_batch`, `get_financials`, `get_forecasts` |
+| `tv_symbol_history` | `GET /symbol` with the 17 `_h` fields (§2.2.1) | `/symbol/history` | `get_financial_history` |
+| `tv_earnings_history` | `GET /symbol` → `earnings_per_share_diluted_fy_h`/`_fq_h` + `fiscal_period_fy_h` | `/symbol/earnings-history` | *(scanner use)* |
+| `tv_dividend_history` | `GET /symbol` → `dps_common_stock_prim_issue_fy_h` | `/symbol/dividend-history` | *(scanner use)* |
+| `tv_technicals_rating` | `GET /symbol` + fixed field set | `/symbol/technicals` | `get_technicals_rating` |
+| `tv_earnings_calendar` | `POST /{market}/scan` filtered by `earnings_release_next_date` | `/calendar/earnings` | `get_earnings_calendar` |
+| `tv_economic_calendar` | `chartevents-reuters/events` | `/calendar/economic` | `get_economic_calendar` |
+| `tv_news` | `news-headlines/v2/headlines` + `news-mediator` | `/news` | `get_news` |
+| `tv_news_story` | story page SSR init-data | `/news/story` | `get_news_story` |
+| `tv_documents` | documents page SSR init-data | `/documents` | `get_documents` |
+| `tv_screener_columns` | harvested bundle list (§2.5) | `/screener/columns` | `get_screener_columns` |
+
+Route names differ from the tool names on purpose: `/news` and `/documents` are
+the resource, and `/symbol/*` namespaces the four facets that are all one
+endpoint. Every one is a read-only GET (op() refuses anything else on an `http`
+binding), asserted in `tests/registry.test.js`.
 
 `tv_symbol_data` covers four official tools via a field map — prefer that over
 four near-duplicate tools, and expose the field allowlist so callers can reach
@@ -852,11 +900,17 @@ files untouched — use it when only the literals changed.
 ### Profile placement
 
 These are chart-independent, so they belong in `base` (`src/tools/_profiles.js`)
-alongside `quote_get` — but note the profile lists are **hardcoded arrays**, and
-the file's header says membership is verified at startup. Adding six tools
-enlarges the `base` payload budget; `tests/profiles.test.js` enforces a ceiling
-measured from the real SDK payload, so that budget likely needs updating in the
-same change.
+alongside `quote_get`. **[DONE 2026-09-16]** All 12 are in the `base` allowlist.
+The predicted budget problem was real and was handled:
+
+- `base` went 27 → 42 tools and 8,382 → 12,548 bytes (schema-less estimate).
+- The first pass measured **13,679 bytes (13.36 KB)**, over the old 12 KB
+  ceiling. Rather than only raising the ceiling, the 12 REST descriptions were
+  TRIMMED (long-form caveats moved into each result's `note` field, where the
+  agent reads them next to the data anyway).
+- `tests/profiles.test.js` now records the measured baseline and sets the
+  ceiling at baseline + ~10% (13.8 KB), in the same change that changed the
+  surface — the ceiling still refuses silent growth.
 
 ### Rate limits and terms
 
@@ -864,8 +918,14 @@ The official MCP documents ~100 req/min per user. These endpoints are
 **undocumented and unversioned**, publish no quota, and may throttle or block
 without notice. They are fine for personal/research use; confirm TradingView's
 terms before any public or commercial deployment. This is the same class of
-dependency `RESEARCH.md` §Limitations already declares ("undocumented internal
+dependency `RESEARCH.md` Limitations already declares ("undocumented internal
 APIs subject to change without notice").
+
+**Enforced in the implementation**, so a caller cannot trip them by accident:
+one request per symbol with a concurrency cap of 5 for batch (≤ 50 symbols),
+screener rows capped at 1000 with a 100 default and the cap checked BEFORE the
+request, the economic-calendar window capped at 90 days (the payload is
+~78–236 KB per week), and every request carrying `AbortSignal.timeout`.
 
 ## 12. Reproduce the evidence
 

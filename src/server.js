@@ -36,6 +36,16 @@ Reading your chart:
 - quote_get → get real-time price snapshot (last, OHLC, volume)
 - data_get_ohlcv → get price bars. ALWAYS pass summary=true unless you need individual bars
 
+Data that has NOTHING to do with the current chart (no desktop app, no chart, no login needed):
+- tv_symbol_data → quote/technicals/fundamentals/forecasts/dividends/profile/history for ANY symbol, in one call. The fields argument takes groups (quote, technicals, fundamentals, forecasts, dividends, profile, earnings_dates, history) and raw screener columns mixed
+- tv_screener_run → many symbols in ONE request with server-side filter/sort and a free total_count. Use this for bulk; tv_symbol_data for detail on the few that matter
+- tv_symbol_history / tv_earnings_history / tv_dividend_history / tv_technicals_rating → focused reads on one symbol
+- tv_earnings_calendar / tv_economic_calendar → forward-looking event windows
+- tv_news → headlines (per-symbol or market flow); tv_news_story → full text
+- tv_documents → filings/transcripts list (body text is an open upstream gap)
+- tv_screener_columns → discovery of valid column names
+These hit public undocumented endpoints; results carry a note field with the caveats.
+
 Reading custom Pine indicator output (line.new/label.new/table.new/box.new drawings):
 - data_get_pine_lines → horizontal price levels from custom indicators (deduplicated, sorted)
 - data_get_pine_labels → text annotations with prices ("PDH 24550", "Bias Long", etc.)
