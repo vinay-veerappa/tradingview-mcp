@@ -1,0 +1,48 @@
+{
+  "symbol_quote": {
+    "status": 200,
+    "bytes": 85,
+    "head": "{\"close\":331.34,\"market_cap_basic\":4835635302713.473,\"name\":\"AAPL\",\"volume\":31747883}"
+  },
+  "history_eps": {
+    "status": 200,
+    "bytes": 555,
+    "head": "{\"earnings_per_share_diluted_fq_h\":[2.0244,2.0086,2.8424,1.8479,1.5677,1.6458,2.3979,0.9668,1.3974,1.5284,2.1774,1.4647,1.2603,1.5246,1.8801,1.2855,1.1955,1.5247,2.0963,1.2354,1.2957,1.3958,1.6802,0.7344,0.646,0.6385,1.2"
+  },
+  "history_dividend": {
+    "status": 200,
+    "bytes": 132,
+    "head": "{\"dps_common_stock_prim_issue_fy_h\":[1.02,0.98,0.94,0.9,0.85,0.795,0.75,0.68,0.6,0.545,0.495,0.4528572,0.40714,0.09464,0,0,0,0,0,0]}"
+  },
+  "enum_metrics": {
+    "status": 200,
+    "bytes": 915,
+    "head": "{\"metrics_full_name\":[{\"id\":\"ytm\",\"name\":\"Yield to maturity\",\"options\":{}},{\"id\":\"ytc\",\"name\":\"Yield to call\",\"options\":{}},{\"id\":\"ytp\",\"name\":\"Yield to put\",\"options\":{}},{\"id\":\"ytw\",\"name\":\"Yield to worst\",\"options\":{}"
+  },
+  "economic_calendar": {
+    "status": 200,
+    "bytes": 78473,
+    "head": "{\n  \"result\": [\n    {\n      \"actual\": null,\n      \"comment\": \"\",\n      \"country\": \"US\",\n      \"currency\": \"USD\",\n      \"date\": \"2026-09-16T11:00:00.000Z\",\n      \"forecast\": null,\n      \"id\": \"16654740 2026-09-16 11:00:00"
+  },
+  "news_headlines": {
+    "status": 200,
+    "bytes": 128602,
+    "head": "{\"items\":[{\"id\":\"DJN_DN20260915008240:0\",\"title\":\"Apple Finally Built a Smarter Siri. It Still Hasn't Caught Up in the AI Race. — WSJ\",\"provider\":\"dow-jones\",\"sourceLogoId\":\"dow-jones\",\"published\":1789524000,\"source\":\"Do"
+  },
+  "news_flow": {
+    "status": 200,
+    "bytes": 111075,
+    "head": "{\"items\":[{\"paywall\":false,\"id\":\"tag:reuters.com,2026-09-16:newsml_ZawbPtTLZ:0\",\"title\":\"ZAWYA: Egypt’s passenger traffic growth to exceed global average through 2050: IATA\",\"published\":1789533670,\"urgency\":2,\"permission"
+  },
+  "symbol_search": {
+    "status": 200,
+    "bytes": 24035,
+    "head": "{\"symbols_remaining\":178,\"symbols\":[{\"symbol\":\"<em>AAPL</em>\",\"description\":\"Apple Inc.\",\"type\":\"stock\",\"exchange\":\"NASDAQ\",\"found_by_isin\":false,\"found_by_cusip\":false,\"cusip\":\"037833100\",\"isin\":\"US0378331005\",\"cik_code"
+  },
+  "documents_page": {
+    "status": 200,
+    "bytes": 406158,
+    "has_filings_block": true,
+    "init_data_blocks": 7
+  }
+}

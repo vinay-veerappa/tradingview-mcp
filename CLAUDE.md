@@ -182,6 +182,35 @@ structurally unbindable until an ADR says otherwise. 102 ops;
 `system_status`/`profile_set` sit outside deliberately (they describe the registry).
 Contract tests: `tests/registry.test.js`.
 
+## REST data surfaces (proposed)
+
+Chart-independent market/reference data is reachable over **public cookie-less
+HTTP** — no desktop app, no chart, no login needed. Full host table, verified
+request/response shapes for screener, quotes, technicals, fundamentals,
+financial history, EPS/dividend history, earnings calendar, economic calendar,
+news, news-story text, documents/filings and the screener column catalogue,
+plus the widget-config and SSR `prs.init-data+json` harvest techniques, are in
+`docs/REST_DATA_SURFACES.md`. **11 of 13 capabilities solved, 2 open** (§10).
+Nothing is implemented from it yet.
+
+Decided for implementation: **one `tv_symbol_data` tool with a named-field map**
+(groups + raw columns + escape hatch), not one tool per capability — design and
+rationale in §11. Personal use.
+
+Persisted artifacts (survive `%TEMP%` cleanup, regenerate with
+`npm run harvest:rest`):
+`docs/fixtures/screener-columns.json` (547 columns, typo-warning only),
+`docs/fixtures/history-fields.json` (**the 17 that actually return data**),
+`docs/fixtures/rest-probe.json`.
+
+Three rules: widgets are a *discovery* channel (never scrape a rendered widget
+— call the endpoint it calls); the app-session XHR path stays only for
+cookie-required surfaces (alerts/watchlist/Pine); and **a field being in the
+column catalogue does not mean it returns data** — `earnings_per_share_diluted_fy_h`
+is absent from the catalogue yet returns a 20-element array, while
+`eps_estimates_fq_h` is listed and returns `null`. Treat
+`history-fields.json` as the working list.
+
 ## Named levels (P2-10)
 
 `src/core/named_levels.js` — pure grammar parser over Pine label text:

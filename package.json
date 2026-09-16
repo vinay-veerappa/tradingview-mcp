@@ -15,6 +15,7 @@
     "start": "node src/server.js",
     "tv": "node src/cli/index.js",
     "lint": "eslint src/",
+    "harvest:rest": "node scripts/harvest_rest_fields.js",
     "test": "npm run test:unit",
     "test:e2e": "node --test tests/e2e.test.js",
     "test:unit": "node --test tests/pine_analyze.test.js tests/pine_source.test.js tests/cli.test.js tests/connection.test.js tests/layout.test.js tests/capabilities.test.js tests/alerts.test.js tests/input_validation.test.js tests/sanitization.test.js tests/replay.test.js tests/launch.test.js tests/chart_indicator.test.js tests/chart_history.test.js tests/update.test.js tests/paper_discovery.test.js tests/paper.test.js tests/format.test.js tests/context.test.js tests/precondition.test.js tests/snapshot.test.js tests/order_idem.test.js tests/named_levels.test.js tests/annotations.test.js tests/profiles.test.js tests/reliability.test.js tests/pane_scan.test.js tests/subscribe.test.js tests/resources.test.js tests/gateway.test.js tests/registry.test.js",

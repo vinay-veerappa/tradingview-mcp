@@ -1,0 +1,24 @@
+{
+  "verified": "2026-09-15",
+  "note": "Array-valued (historical) screener fields. All return most-recent-first. Look-alike names such as earnings_per_share_fq_h return null -- use these exact names.",
+  "count": 17,
+  "fields": [
+    "total_revenue_fy_h",
+    "total_revenue_fq_h",
+    "net_income_fy_h",
+    "net_income_fq_h",
+    "total_assets_fy_h",
+    "total_assets_fq_h",
+    "total_debt_fy_h",
+    "total_debt_fq_h",
+    "free_cash_flow_fy_h",
+    "free_cash_flow_fq_h",
+    "earnings_per_share_diluted_fy_h",
+    "earnings_per_share_diluted_fq_h",
+    "earnings_per_share_basic_fy_h",
+    "dps_common_stock_prim_issue_fy_h",
+    "fiscal_period_fy_h",
+    "gross_profit_fy_h",
+    "ebitda_fy_h"
+  ]
+}
