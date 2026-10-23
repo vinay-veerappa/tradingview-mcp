@@ -85,11 +85,31 @@ const DEV_ONLY = [
   'indicator_set_inputs', 'indicator_toggle_visibility', 'indicator_search',
 ];
 
+const CORE_TOOLS = Object.freeze([
+  'tv_health_check',
+  'quote_get',
+  'data_get_ohlcv',
+  'chart_get_state',
+  'capture_screenshot',
+  'chart_set_symbol',
+  'chart_set_timeframe',
+  'tv_screener_run',
+  'tv_screener_columns',
+  'tv_symbol_data',
+  'tv_symbol_history',
+  'tv_technicals_rating',
+  'pine_compile',
+  'pine_smart_compile',
+  'pine_analyze',
+  'pine_get_errors',
+]);
+
 // Tools in NO profile remain visible only under devel. system_status and
 // profile_set are registered separately and always visible — add them to every
 // non-devel profile's allowlist here so applyProfile never hides them.
 export function toolsForProfile(profile) {
   if (profile === 'devel') return null; // all visible
+  if (profile === 'core') return new Set([...CORE_TOOLS, ...ALWAYS_VISIBLE]);
   const set = PROFILES[profile];
   if (!set) return null;
   return new Set([...set, ...ALWAYS_VISIBLE]);
@@ -110,9 +130,9 @@ let _activeProfile = process.env.TRADINGVIEW_MCP_PROFILE || 'base';
 export function getActiveProfile() { return _activeProfile; }
 
 export function setActiveProfile(name) {
-  // 'devel' is valid but not a static list entry (it means "no filtering").
-  if (name !== 'devel' && !knownProfiles().includes(name)) {
-    throw new Error(`unknown profile '${name}'; known: ${knownProfiles().join(', ')}, devel`);
+  // 'devel' and 'core' are valid dynamically
+  if (name !== 'devel' && name !== 'core' && !knownProfiles().includes(name)) {
+    throw new Error(`unknown profile '${name}'; known: ${knownProfiles().join(', ')}, core, devel`);
   }
   const prev = _activeProfile;
   _activeProfile = name;
