@@ -4,6 +4,8 @@ export const REPLAY_TRADING_ENV = 'TRADINGVIEW_MCP_ALLOW_REPLAY_TRADES';
 export const REPLAY_TRADING_ACK = 'I_UNDERSTAND_THIS_CHANGES_SIMULATED_REPLAY_POSITIONS';
 export const SELF_UPDATE_ENV = 'TRADINGVIEW_MCP_ALLOW_SELF_UPDATE';
 export const SELF_UPDATE_ACK = 'I_UNDERSTAND_THIS_PULLS_AND_RUNS_REMOTE_CODE';
+export const BROKER_SESSION_ENV = 'TRADINGVIEW_MCP_ALLOW_BROKER_SESSION';
+export const BROKER_SESSION_ACK = 'I_UNDERSTAND_THIS_TYPES_BROKER_CREDENTIALS';
 
 export function requireArbitraryPageJs(env = process.env) {
   if (env[ARBITRARY_PAGE_JS_ENV] !== ARBITRARY_PAGE_JS_ACK) {
@@ -25,6 +27,14 @@ export function requireSelfUpdate(env = process.env) {
   if (env[SELF_UPDATE_ENV] !== SELF_UPDATE_ACK) {
     throw new Error(
       `Self-update is disabled. tv_update pulls origin/main and runs npm ci, executing remote code. To deliberately enable it, set ${SELF_UPDATE_ENV}=${SELF_UPDATE_ACK} when starting the MCP server or CLI.`,
+    );
+  }
+}
+
+export function requireBrokerSession(env = process.env) {
+  if (env[BROKER_SESSION_ENV] !== BROKER_SESSION_ACK) {
+    throw new Error(
+      `Broker login/logout is disabled. These tools type broker credentials into the trading panel. To deliberately enable tv_broker_login/tv_broker_logout, set ${BROKER_SESSION_ENV}=${BROKER_SESSION_ACK} when starting the MCP server or CLI.`,
     );
   }
 }
@@ -55,6 +65,13 @@ export function listCapabilities(env = process.env) {
       env_var: SELF_UPDATE_ENV,
       enabled: env[SELF_UPDATE_ENV] === SELF_UPDATE_ACK,
       required_for: ['tv_update'],
+    },
+    {
+      id: 'broker_session',
+      label: 'Broker login/logout (types broker credentials into the trading panel)',
+      env_var: BROKER_SESSION_ENV,
+      enabled: env[BROKER_SESSION_ENV] === BROKER_SESSION_ACK,
+      required_for: ['tv_broker_login', 'tv_broker_logout'],
     },
   ];
 }

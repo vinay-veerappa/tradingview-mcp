@@ -92,9 +92,10 @@ describe('profile definitions (P2-19/§3.1)', () => {
 });
 
 describe('system_status introspection (P2-14)', () => {
-  test('capability inventory lists all three gates without leaking ack values', () => {
+  test('capability inventory lists all gates without leaking ack values', () => {
     const caps = listCapabilities({});
-    assert.equal(caps.length, 3);
+    assert.equal(caps.length, 4);
+    assert.deepEqual(caps.map((c) => c.id).sort(), ['arbitrary_page_js', 'broker_session', 'replay_trades', 'self_update']);
     for (const c of caps) {
       assert.equal(c.enabled, false);
       assert.ok(c.env_var);

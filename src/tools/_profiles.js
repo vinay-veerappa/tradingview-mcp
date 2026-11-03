@@ -44,6 +44,9 @@ export const PROFILES = Object.freeze({
     'tv_technicals_rating', 'tv_screener_run', 'tv_screener_columns',
     'tv_earnings_calendar', 'tv_economic_calendar',
     'tv_news', 'tv_news_story', 'tv_documents',
+    // Broker truth from the page's own gateway polls (L-133): read-only
+    'tv_broker_state', 'tv_broker_positions', 'tv_broker_orders',
+    'tv_broker_quotes', 'tv_broker_account',
   ]),
   // Pine development: editor + compiler + analysis. Adds to base.
   pine: [
@@ -63,6 +66,8 @@ export const PROFILES = Object.freeze({
     'tab_list', 'tab_new', 'tab_switch', 'tab_close',
     'watchlist_get', 'watchlist_add', 'watchlist_remove',
     'batch_run', 'alert_delete', 'draw_clear',
+    // broker session control (login/logout, capability-gated)
+    'tv_broker_login', 'tv_broker_logout',
   ],
   // Paper trading surface (fail-closed broker identity still enforced in core).
   paper: [
@@ -71,6 +76,10 @@ export const PROFILES = Object.freeze({
     'paper_list_positions', 'paper_list_orders',
     'paper_place_order', 'paper_cancel_order', 'paper_modify_order',
     'paper_close_position', 'paper_set_brackets',
+    // live-broker truth beside the paper surface: a session that trades paper
+    // often wants the real account state next to it
+    'tv_broker_state', 'tv_broker_positions', 'tv_broker_orders',
+    'tv_broker_quotes', 'tv_broker_account',
   ],
   // Everything, including dangerous surfaces. Explicit opt-in only.
 });

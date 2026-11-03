@@ -22,6 +22,7 @@ import { registerUiTools } from './ui.js';
 import { registerPaneTools } from './pane.js';
 import { registerTabTools } from './tab.js';
 import { registerPaperTools } from './paper.js';
+import { registerBrokerTools } from './broker.js';
 import { registerReliabilityTools } from './reliability.js';
 import { registerPaneScanTools } from './pane_scan.js';
 import { registerRestTools } from './rest.js';
@@ -58,6 +59,7 @@ export function registerAll(server, opts = {}) {
   registerPaneTools(server, opts);
   registerTabTools(server, opts);
   registerPaperTools(server, opts);
+  registerBrokerTools(server, opts);
   registerReliabilityTools(server, opts);
   registerPaneScanTools(server, opts);
   registerRestTools(server, opts);
