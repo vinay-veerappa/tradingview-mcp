@@ -10,8 +10,9 @@
 
 import { evaluate, CDP_HOST, CDP_PORT, getTargetInfo } from '../connection.js';
 import { chartContextOwner } from './data.js';
+import { getAccount, getState, getOrders, getPositions, getQuotes, loadPairs } from './broker.js';
 
-export const COMPAT_SCHEMA_VERSION = 1;
+export const COMPAT_SCHEMA_VERSION = 2;
 
 // Per-surface probes: one bounded evaluate each, no side effects, no panel
 // opens. Names are the shared vocabulary with the browser gate plan (§8.3).
@@ -100,7 +101,55 @@ const PROBES = [
       })()
     `),
   },
+  {
+    // Broker gateway: read-only tap, no page evaluate. `not_connected` is a
+    // neutral answer — a disconnected broker is not a broken surface.
+    surface: 'broker',
+    probe: 'broker_gateway_polls_readable',
+    critical: false,
+    run: async (_evaluate, deps) => (deps?.brokerProbe || brokerProbe)(),
+  },
 ];
+
+/**
+ * Broker surface probe. Healthy when the gateway polls for all four
+ * endpoints are readable; degraded when the connection exists but some
+ * endpoint is missing; `not_connected` when no broker traffic is present
+ * (deliberately NOT a compatibility failure).
+ */
+async function brokerProbe() {
+  const acct = await getAccount({ waitMs: 1500, _deps: undefined });
+  if (!acct.connected) {
+    return {
+      ok: false,
+      status: 'not_connected',
+      broker_account_id: acct.broker_account_id || null,
+      pairing_available: Boolean(acct.label && acct.broker_account_id),
+    };
+  }
+  const endpoints = {};
+  const errors = {};
+  for (const [name, fn] of [['state', getState], ['orders', getOrders], ['positions', getPositions], ['quotes', getQuotes]]) {
+    try {
+      await fn({ waitMs: 2000 });
+      endpoints[name] = true;
+    } catch (err) {
+      endpoints[name] = false;
+      errors[name] = String(err?.message || err).slice(0, 120);
+    }
+  }
+  const allOk = Object.values(endpoints).every(Boolean);
+  const pairs = loadPairs();
+  return {
+    ok: allOk,
+    degraded: !allOk,
+    endpoints,
+    ...(Object.keys(errors).length ? { endpoint_errors: errors } : {}),
+    broker_account_id: acct.broker_account_id || null,
+    pairing_available: Boolean(acct.label && acct.broker_account_id),
+    pairing_source: acct.pairing_source || (pairs[acct.broker_account_id] ? 'memory' : null),
+  };
+}
 
 const ACTIONS = {
   chart: 'Chart API path broken after a TradingView update — all chart_* tools will fail. Capture tv_health_check output and record the desktop version.',
@@ -108,6 +157,7 @@ const ACTIONS = {
   strategy_tester: 'Strategy dataSources path broken — data_get_strategy_results/trades/equity will fail.',
   paper: 'Paper/trading API unreachable — paper_* tools will fail (desktop has no trading connection).',
   alerts: 'Alert service path broken — alert_* tools will fail.',
+  broker: 'Broker gateway traffic is present but one or more polled endpoints are unreadable — the TradingView↔broker integration may have moved. Re-run tv_broker_account; if it persists, the gateway was changed by a TV update.',
 };
 
 /**
@@ -130,16 +180,34 @@ export async function compatibilityReport(_deps = null) {
   for (const def of PROBES) {
     const entry = { surface: def.surface, probe: def.probe, critical: def.critical || false, status: 'unavailable' };
     try {
-      const r = await def.run(_resolve(_deps).evaluate);
-      if (r?.ok) {
+      const r = await def.run(_resolve(_deps).evaluate, _deps);
+      if (r?.status === 'not_connected') {
+        entry.status = 'not_connected';
+        if (def.surface === 'broker') {
+          if (r.broker_account_id) entry.broker_account_id = r.broker_account_id;
+          entry.pairing_available = r.pairing_available === true;
+        }
+      } else if (r?.ok) {
         entry.status = 'healthy';
         if (def.surface === 'chart' && r.symbol) entry.chart_symbol = r.symbol;
         if (def.surface === 'paper' && r.broker_id) entry.broker_id = r.broker_id;
         if (def.surface === 'strategy_tester') entry.strategy_count = r.strategy_count ?? 0;
         if (def.surface === 'pine_editor' && r.error) { entry.status = 'degraded'; entry.error = r.error; }
+        if (def.surface === 'broker') {
+          entry.endpoints = r.endpoints || {};
+          entry.broker_account_id = r.broker_account_id ?? null;
+          entry.pairing_available = r.pairing_available === true;
+          if (r.pairing_source) entry.pairing_source = r.pairing_source;
+        }
       } else {
-        entry.status = 'unavailable';
+        entry.status = r?.degraded ? 'degraded' : 'unavailable';
         entry.error = String(r?.error || 'probe returned not-ok');
+        if (def.surface === 'broker') {
+          if (r?.endpoints) entry.endpoints = r.endpoints;
+          if (r?.endpoint_errors) entry.endpoint_errors = r.endpoint_errors;
+          if (r?.broker_account_id) entry.broker_account_id = r.broker_account_id;
+          entry.pairing_available = r?.pairing_available === true;
+        }
       }
     } catch (err) {
       entry.status = 'unavailable';
@@ -149,15 +217,17 @@ export async function compatibilityReport(_deps = null) {
     report.failed_probes.push(entry);
   }
 
-  // Overall: chart is load-bearing; surfaces degrade independently.
-  const chartOk = report.supported.chart === 'healthy';
-  if (!chartOk && report.supported.chart !== 'degraded') report.overall = 'unavailable';
-  else if (Object.values(report.supported).includes('unavailable')) report.overall = 'degraded';
-  else if (Object.values(report.supported).includes('degraded')) report.overall = 'degraded';
+  // Overall: chart is load-bearing; `not_connected` is neutral (an absent
+  // broker is not a broken surface). Surfaces degrade independently.
+  const relevant = Object.values(report.supported).filter((s) => s !== 'not_connected');
+  const chartState = report.supported.chart;
+  if (chartState !== 'healthy' && chartState !== 'degraded') report.overall = 'unavailable';
+  else if (relevant.some((s) => s === 'unavailable' || s === 'degraded')) report.overall = 'degraded';
   else report.overall = 'healthy';
 
   for (const p of report.failed_probes) {
-    if (p.status === 'unavailable' && ACTIONS[p.surface]) {
+    const isProblem = p.status === 'unavailable' || (p.surface === 'broker' && p.status === 'degraded');
+    if (isProblem && ACTIONS[p.surface]) {
       report.recommended_actions.push(ACTIONS[p.surface]);
     }
   }

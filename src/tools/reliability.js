@@ -6,7 +6,7 @@ import { jsonResult, errorResult } from './_format.js';
 import { compatibilityReport, diagnostics, COMPAT_SCHEMA_VERSION } from '../core/reliability.js';
 
 export function registerReliabilityTools(server) {
-  op('tv_compatibility_report', 'Per-TV-build compatibility matrix: probes each TradingView surface (chart, pine_editor, strategy_tester, paper, alerts) and reports healthy/degraded/unavailable with probe names and recommended actions. Answers "what exactly broke after the TradingView update" instead of unrelated tool failures.', {
+  op('tv_compatibility_report', 'Per-TV-build compatibility matrix: probes each TradingView surface (chart, pine_editor, strategy_tester, paper, alerts, broker) and reports healthy/degraded/unavailable with probe names and recommended actions. Answers "what exactly broke after the TradingView update" instead of unrelated tool failures. A disconnected broker reports not_connected (neutral), not broken.', {
     refresh: z.boolean().optional().describe('Reserved: re-run probes even when a fresh report is cached'),
   },
     A.READ, async ({ refresh }) => {

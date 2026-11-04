@@ -11,18 +11,30 @@ const ALL_OK = (js) => {
   return { ok: false, error: 'unmatched probe js: ' + js.slice(0, 60) };
 };
 
+// The broker probe taps live traffic, so tests always inject its result.
+const BROKER_OK = async () => ({
+  ok: true,
+  endpoints: { state: true, orders: true, positions: true, quotes: true },
+  broker_account_id: 'D68853007',
+  pairing_available: true,
+  pairing_source: 'accounts-endpoint',
+});
+
 // Mock evaluator keyed on mutually-exclusive tokens in each probe's JS:
 // chart probe calls chart.symbol(); strategy probe uses dataSources (no symbol());
 // paper probe calls tvTrading(); pine hits pine-facade; alerts uses alertService.
 
 describe('tv_compatibility_report (P2-15)', () => {
-  test('healthy: all 5 surfaces healthy, overall healthy, no actions', async () => {
-    const r = await compatibilityReport({ evaluate: async (js) => ALL_OK(js) });
+  test('healthy: all surfaces healthy, overall healthy, no actions', async () => {
+    const r = await compatibilityReport({ evaluate: async (js) => ALL_OK(js), brokerProbe: BROKER_OK });
     assert.equal(r.schema_version, COMPAT_SCHEMA_VERSION);
     assert.equal(r.overall, 'healthy');
-    assert.deepEqual(Object.keys(r.supported).sort(), ['alerts', 'chart', 'paper', 'pine_editor', 'strategy_tester']);
-    assert.equal(r.failed_probes.length, 5);
+    assert.deepEqual(Object.keys(r.supported).sort(), ['alerts', 'broker', 'chart', 'paper', 'pine_editor', 'strategy_tester']);
+    assert.equal(r.failed_probes.length, 6);
     assert.equal(r.recommended_actions.length, 0);
+    const broker = r.failed_probes.find((p) => p.surface === 'broker');
+    assert.equal(broker.status, 'healthy');
+    assert.equal(broker.pairing_available, true);
 });
 
   test('broken chart path → chart unavailable, overall unavailable, targeted action', async () => {
@@ -30,6 +42,7 @@ describe('tv_compatibility_report (P2-15)', () => {
       evaluate: async (js) => (/chart\.symbol\(\)/.test(js))
         ? { ok: false, error: 'path gone' }
         : ALL_OK(js),
+      brokerProbe: BROKER_OK,
     });
     assert.equal(report.supported.chart, 'unavailable');
     assert.equal(report.overall, 'unavailable');
@@ -43,6 +56,7 @@ describe('tv_compatibility_report (P2-15)', () => {
   test('probe THROW → unavailable entry, report still returns', async () => {
     const report = await compatibilityReport({
       evaluate: async (js) => { if (/alertService/.test(js)) throw new Error('boom'); return ALL_OK(js); },
+      brokerProbe: BROKER_OK,
     });
     assert.equal(report.supported.alerts, 'unavailable');
     assert.equal(report.overall, 'degraded');
@@ -52,10 +66,42 @@ describe('tv_compatibility_report (P2-15)', () => {
   test('strategy path broken while chart healthy → degraded overall', async () => {
     const report = await compatibilityReport({
       evaluate: async (js) => (/dataSources/.test(js)) ? { ok: false, error: 'ds broken' } : ALL_OK(js),
+      brokerProbe: BROKER_OK,
     });
     assert.equal(report.supported.strategy_tester, 'unavailable');
     assert.equal(report.supported.chart, 'healthy');
     assert.equal(report.overall, 'degraded');
+  });
+
+  test('broker not connected is neutral: overall stays healthy, no action', async () => {
+    const report = await compatibilityReport({
+      evaluate: async (js) => ALL_OK(js),
+      brokerProbe: async () => ({ ok: false, status: 'not_connected', pairing_available: false }),
+    });
+    assert.equal(report.supported.broker, 'not_connected');
+    assert.equal(report.overall, 'healthy');
+    assert.equal(report.recommended_actions.length, 0);
+    assert.equal(report.failed_probes.find((p) => p.surface === 'broker').pairing_available, false);
+  });
+
+  test('broker connected but an endpoint unreadable → degraded + targeted action', async () => {
+    const report = await compatibilityReport({
+      evaluate: async (js) => ALL_OK(js),
+      brokerProbe: async () => ({
+        ok: false,
+        degraded: true,
+        endpoints: { state: true, orders: true, positions: true, quotes: false },
+        endpoint_errors: { quotes: 'No quotes traffic observed' },
+        broker_account_id: 'D68853007',
+        pairing_available: true,
+      }),
+    });
+    assert.equal(report.supported.broker, 'degraded');
+    assert.equal(report.overall, 'degraded');
+    assert.ok(report.recommended_actions.some((a) => a.includes('Broker gateway traffic is present')));
+    const entry = report.failed_probes.find((p) => p.surface === 'broker');
+    assert.equal(entry.endpoints.quotes, false);
+    assert.match(entry.endpoint_errors.quotes, /No quotes traffic/);
   });
 });
 
