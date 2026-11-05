@@ -633,14 +633,31 @@ export async function getAccount({ waitMs = 1500, refresh = false, _deps } = {})
   const brokerAccountId = freshest?.accountId ?? cache.lastAccountId ?? null;
   const acctMeta = brokerAccountId ? cache.accounts.get(brokerAccountId) : null;
 
-  let label = parsed.label || acctMeta?.name || null;
-  let confidence = parsed.confidence;
-  if (parsed.confidence === 'low' && parsed.label && equity != null) {
+  // The accounts endpoint is the broker's own id -> name table; the panel label is scraped text that
+  // can be glued to the balance or truncated (it once persisted "APEX1012150000018" for ...183). So
+  // the endpoint name wins whenever it was captured, and the UI label only cross-checks it.
+  const endpointName = acctMeta?.name || null;
+  let uiLabel = parsed.label || null;
+  if (parsed.confidence === 'low' && uiLabel && equity != null) {
     // The bar glued "<label><equity>"; the state poll's equity disambiguates.
     const split = splitGluedLabel(dom?.raw || '', equity);
-    if (split) { label = split.label; confidence = 'high'; }
+    if (split) uiLabel = split.label;
   }
-  let pairingSource = parsed.label ? 'ui' : (acctMeta?.name ? 'accounts-endpoint' : null);
+  const uiConfidence = parsed.confidence === 'low' && uiLabel !== parsed.label ? 'high' : parsed.confidence;
+  let label;
+  let confidence;
+  let pairingSource;
+  let labelConflict = false;
+  if (endpointName) {
+    label = endpointName;
+    confidence = 'high';
+    pairingSource = 'accounts-endpoint';
+    labelConflict = Boolean(uiLabel) && uiLabel.toUpperCase() !== endpointName.toUpperCase();
+  } else {
+    label = uiLabel;
+    confidence = uiConfidence;
+    pairingSource = uiLabel ? 'ui' : null;
+  }
   if (!label && brokerAccountId) {
     const mem = recallPair(brokerAccountId);
     if (mem?.label) { label = mem.label; pairingSource = 'memory'; confidence = 'memory'; }
@@ -658,6 +675,8 @@ export async function getAccount({ waitMs = 1500, refresh = false, _deps } = {})
     broker_account_id: brokerAccountId,
     pairing_source: pairingSource,
     pairing_confidence: confidence,
+    // Set when the panel text disagrees with the broker's own name for this id; trust `label`.
+    ...(labelConflict && { ui_label: uiLabel, label_conflict: true }),
     manager_open: Boolean(dom?.manager_open),
     last_seen_ms_ago: age,
     broker_accounts: [...cache.accounts.entries()].map(([id, m]) => ({

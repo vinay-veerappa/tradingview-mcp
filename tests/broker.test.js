@@ -249,6 +249,25 @@ describe('getAccount', () => {
     assert.deepEqual(r.broker_accounts.map((a) => a.label), ['APEX10121500000184']);
   });
 
+  it('the accounts-endpoint name beats a truncated UI label, and the conflict is reported', async () => {
+    _resetCache();
+    const ACCOUNTS_URL = 'https://tv-demo.tradovateapi.com/accounts?locale=en';
+    ingest(ACCOUNTS_URL, { s: 'ok', d: [{ id: 'D69532036', name: 'APEX10121500000184', type: 'live', prefix: 'NINJATRADER' }] });
+    ingest(QUOTES_URL, { s: 'ok', d: [{ n: 'MESZ6', v: { lp: 7612 } }] });
+    const deps = {
+      listPages: async () => [],
+      // the manager bar text lost its last digit
+      evaluate: async () => ({ label: null, equity: null, broker: 'NinjaTrader', manager_open: true, raw: 'APEX1012150000018\n50,895.79 USD' }),
+    };
+    const r = await getAccount({ waitMs: 10, _deps: deps });
+    assert.equal(r.label, 'APEX10121500000184');
+    assert.equal(r.pairing_source, 'accounts-endpoint');
+    assert.equal(r.pairing_confidence, 'high');
+    assert.equal(r.label_conflict, true);
+    assert.equal(r.ui_label, 'APEX1012150000018');
+    assert.equal(r.pairs.find((p) => p.broker_account_id === 'D69532036').label, 'APEX10121500000184');
+  });
+
   it('answers not-connected without throwing when nothing is known', async () => {
     _resetCache();
     const deps = { listPages: async () => [], evaluate: async () => { throw new Error('CDP down'); } };
